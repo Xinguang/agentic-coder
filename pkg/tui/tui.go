@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -74,12 +75,14 @@ type SubmitCallback func(input string, opID uint64) tea.Cmd
 type Model struct {
 	textinput    textinput.Model
 	spinner      spinner.Model
+	viewport     viewport.Model
 	output       *strings.Builder
 	isStreaming  bool
 	isThinking   bool
 	thinkingText string
 	interrupted  bool
 	currentOpID  uint64 // Current operation ID
+	autoScroll   bool   // Auto-scroll to bottom on new content
 	model        string
 	cwd          string
 	version      string
@@ -88,6 +91,7 @@ type Model struct {
 	onSubmit     SubmitCallback
 	lastActivity time.Time
 	showWelcome  bool
+	ready        bool // Viewport ready after first WindowSizeMsg
 }
 
 // Config holds TUI configuration
@@ -103,17 +107,22 @@ func New(cfg Config) Model {
 	ti := textinput.New()
 	ti.Placeholder = ""
 	ti.Focus()
-	ti.Prompt = ""  // We'll render prompt ourselves
+	ti.Prompt = "" // We'll render prompt ourselves
 	ti.CharLimit = 0
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
+	vp := viewport.New(80, 20) // Will be resized on WindowSizeMsg
+	vp.SetContent("")
+
 	return Model{
 		textinput:    ti,
 		spinner:      s,
+		viewport:     vp,
 		output:       &strings.Builder{},
+		autoScroll:   true,
 		model:        cfg.Model,
 		cwd:          cfg.CWD,
 		version:      cfg.Version,
@@ -180,12 +189,67 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyCtrlD:
 			return m, tea.Quit
+
+		case tea.KeyPgUp:
+			m.autoScroll = false
+			m.viewport.ViewUp()
+			return m, nil
+
+		case tea.KeyPgDown:
+			m.viewport.ViewDown()
+			// Re-enable auto-scroll if at bottom
+			if m.viewport.AtBottom() {
+				m.autoScroll = true
+			}
+			return m, nil
+
+		case tea.KeyUp:
+			// Allow scrolling with arrow keys when not typing
+			if m.textinput.Value() == "" {
+				m.autoScroll = false
+				m.viewport.LineUp(1)
+				return m, nil
+			}
+
+		case tea.KeyDown:
+			if m.textinput.Value() == "" {
+				m.viewport.LineDown(1)
+				if m.viewport.AtBottom() {
+					m.autoScroll = true
+				}
+				return m, nil
+			}
 		}
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
 		m.textinput.Width = msg.Width - 4
+
+		// Calculate viewport height (total - status line - input line - padding)
+		headerHeight := 0
+		footerHeight := 2 // status line + input line
+		if m.isStreaming {
+			footerHeight = 3 // extra line for thinking status
+		}
+		vpHeight := msg.Height - headerHeight - footerHeight
+		if vpHeight < 1 {
+			vpHeight = 1
+		}
+
+		if !m.ready {
+			m.viewport = viewport.New(msg.Width, vpHeight)
+			m.viewport.SetContent(m.getViewportContent())
+			m.ready = true
+		} else {
+			m.viewport.Width = msg.Width
+			m.viewport.Height = vpHeight
+		}
+
+		// Auto-scroll to bottom
+		if m.autoScroll {
+			m.viewport.GotoBottom()
+		}
 
 	case spinner.TickMsg:
 		if m.isStreaming {
@@ -197,6 +261,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.isThinking = false
 		m.lastActivity = time.Now()
 		m.print(msg.Text)
+		m.updateViewport()
 
 	case StreamThinkingMsg:
 		m.lastActivity = time.Now()
@@ -214,6 +279,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			valStr = strings.ReplaceAll(valStr, "\n", "\\n")
 			m.print(dimStyle.Render(fmt.Sprintf("  %s: %s\n", k, valStr)))
 		}
+		m.updateViewport()
 
 	case ToolResultMsg:
 		m.thinkingText = "Thinking"
@@ -227,6 +293,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.print(errorStyle.Render(fmt.Sprintf("✗ %s: %s\n", msg.Name, msg.Summary)))
 		}
+		m.updateViewport()
 
 	case StreamDoneMsg:
 		// Only process if this is the current operation (ignore stale messages)
@@ -238,6 +305,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
 			}
 			m.print("\n")
+			m.updateViewport()
 		}
 	}
 
@@ -250,27 +318,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View renders the UI
 func (m Model) View() string {
+	if !m.ready {
+		return "Initializing..."
+	}
+
 	var b strings.Builder
 
-	// Welcome message (only shown once at start)
-	if m.showWelcome {
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Agentic Coder v%s", m.version)))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s | %s", m.model, shortenPath(m.cwd, 50))))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render("  Type /help for commands, Ctrl+C to interrupt"))
-		b.WriteString("\n\n")
-	}
-
-	// Output content
-	output := m.output.String()
-	b.WriteString(output)
-
-	// Ensure output ends with newline before prompt
-	if len(output) > 0 && !strings.HasSuffix(output, "\n") {
-		b.WriteString("\n")
-	}
+	// Viewport (scrollable output area)
+	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
 
 	// Status line when streaming (show above prompt)
 	if m.isStreaming {
@@ -282,9 +338,16 @@ func (m Model) View() string {
 		b.WriteString("\n")
 	}
 
+	// Scroll indicator
+	scrollInfo := ""
+	if !m.viewport.AtBottom() {
+		scrollInfo = dimStyle.Render(" [↑↓ scroll]")
+	}
+
 	// Prompt line (always visible): > input_here
 	b.WriteString(promptStyle.Render("> "))
 	b.WriteString(m.textinput.View())
+	b.WriteString(scrollInfo)
 
 	return b.String()
 }
@@ -293,6 +356,35 @@ func (m Model) View() string {
 func (m *Model) print(text string) {
 	m.output.WriteString(text)
 	m.showWelcome = false // Hide welcome after first output
+}
+
+// getViewportContent returns the content for the viewport
+func (m *Model) getViewportContent() string {
+	var b strings.Builder
+
+	// Welcome message (only shown once at start)
+	if m.showWelcome {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Agentic Coder v%s", m.version)))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s | %s", m.model, shortenPath(m.cwd, 50))))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Type /help for commands, ↑↓/PgUp/PgDn to scroll"))
+		b.WriteString("\n\n")
+	}
+
+	// Output content
+	b.WriteString(m.output.String())
+
+	return b.String()
+}
+
+// updateViewport updates the viewport content and scrolls if needed
+func (m *Model) updateViewport() {
+	m.viewport.SetContent(m.getViewportContent())
+	if m.autoScroll {
+		m.viewport.GotoBottom()
+	}
 }
 
 // handleCommand processes slash commands
@@ -308,6 +400,7 @@ func (m *Model) handleCommand(input string) tea.Cmd {
 	case "/clear", "/cls":
 		m.output.Reset()
 		m.showWelcome = true
+		m.updateViewport()
 	case "/exit", "/quit", "/q":
 		return tea.Quit
 	case "/model":
@@ -335,6 +428,8 @@ func (m *Model) helpText() string {
     Enter      Send message
     Ctrl+C     Interrupt / Exit
     Ctrl+D     Exit
+    ↑/↓        Scroll (when input empty)
+    PgUp/PgDn  Scroll page
 `) + "\n"
 }
 
