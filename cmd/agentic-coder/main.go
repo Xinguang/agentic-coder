@@ -432,16 +432,26 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create session manager: %w", err)
 	}
 
-	// Create new session
-	sess, err := sessMgr.NewSession(&session.SessionOptions{
-		ProjectPath: cwd,
-		CWD:         cwd,
-		Model:       provider.ResolveModel(model),
-		Version:     version,
-		MaxTokens:   200000,
-	})
+	// Try to resume the latest session for this project
+	var sess *session.Session
+	sess, err = sessMgr.ResumeLatest()
 	if err != nil {
-		return fmt.Errorf("failed to create session: %w", err)
+		// No existing session, create a new one
+		sess, err = sessMgr.NewSession(&session.SessionOptions{
+			ProjectPath: cwd,
+			CWD:         cwd,
+			Model:       provider.ResolveModel(model),
+			Version:     version,
+			MaxTokens:   200000,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to create session: %w", err)
+		}
+		if verbose {
+			printer.Dim("Started new session: %s", sess.ID[:8])
+		}
+	} else {
+		printer.Dim("Resumed session: %s (%d messages)", sess.ID[:8], len(sess.Messages))
 	}
 
 	// Create work context manager
@@ -462,10 +472,16 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Use TUI mode if enabled and not disabled
 	if useTUI && !noTUI {
+		sessionID := sess.ID
+		if len(sessionID) > 8 {
+			sessionID = sessionID[:8]
+		}
 		runner := tui.NewRunner(eng, tui.Config{
-			Model:   sess.Model,
-			CWD:     cwd,
-			Version: version,
+			Model:        sess.Model,
+			CWD:          cwd,
+			Version:      version,
+			SessionID:    sessionID,
+			MessageCount: len(sess.Messages),
 		})
 		return runner.Run()
 	}

@@ -86,6 +86,8 @@ type Model struct {
 	model        string
 	cwd          string
 	version      string
+	sessionID    string // Short session ID
+	messageCount int    // Messages in session (for resumed sessions)
 	width        int
 	height       int
 	onSubmit     SubmitCallback
@@ -96,10 +98,12 @@ type Model struct {
 
 // Config holds TUI configuration
 type Config struct {
-	Model    string
-	CWD      string
-	Version  string
-	OnSubmit SubmitCallback
+	Model        string
+	CWD          string
+	Version      string
+	SessionID    string // Short session ID for display
+	MessageCount int    // Number of messages in resumed session
+	OnSubmit     SubmitCallback
 }
 
 // New creates a new TUI model
@@ -126,6 +130,8 @@ func New(cfg Config) Model {
 		model:        cfg.Model,
 		cwd:          cfg.CWD,
 		version:      cfg.Version,
+		sessionID:    cfg.SessionID,
+		messageCount: cfg.MessageCount,
 		onSubmit:     cfg.OnSubmit,
 		lastActivity: time.Now(),
 		showWelcome:  true,
@@ -369,6 +375,14 @@ func (m *Model) getViewportContent() string {
 		b.WriteString("\n")
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s | %s", m.model, shortenPath(m.cwd, 50))))
 		b.WriteString("\n")
+		if m.sessionID != "" {
+			if m.messageCount > 0 {
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  Session: %s (resumed, %d messages)", m.sessionID, m.messageCount)))
+			} else {
+				b.WriteString(dimStyle.Render(fmt.Sprintf("  Session: %s", m.sessionID)))
+			}
+			b.WriteString("\n")
+		}
 		b.WriteString(dimStyle.Render("  Type /help for commands, ↑↓/PgUp/PgDn to scroll"))
 		b.WriteString("\n\n")
 	}
