@@ -52,7 +52,7 @@ write, edit, and understand code using natural language.`,
 	}
 
 	// Flags
-	rootCmd.PersistentFlags().StringVarP(&model, "model", "m", "sonnet", "Model: sonnet/opus/haiku, gemini, gpt4o, llama3.2/qwen (Ollama)")
+	rootCmd.PersistentFlags().StringVarP(&model, "model", "m", "sonnet", "Model: sonnet/opus/haiku, geminicli, gemini, gpt4o, deepseek, llama/qwen (Ollama)")
 	rootCmd.PersistentFlags().StringVarP(&apiKey, "api-key", "k", "", "API key (defaults to ANTHROPIC_API_KEY env var)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&useTUI, "tui", "t", true, "Enable interactive TUI mode (default: true)")
@@ -1116,9 +1116,11 @@ func createProvider(providerType provider.ProviderType, customKey string, printe
 		return gemini.New(key), nil
 
 	case provider.ProviderTypeGeminiCLI:
-		// Use local Gemini CLI
+		// Use local Gemini CLI (auto model = gemini-3)
 		printer.Dim("%s Using local Gemini CLI", ui.IconGear)
-		return geminicli.New(geminicli.WithModel("gemini-2.5-pro")), nil
+		return geminicli.New(
+			geminicli.WithYoloMode(true), // Auto approve for agentic use
+		), nil
 
 	case provider.ProviderTypeDeepSeek:
 		key := customKey

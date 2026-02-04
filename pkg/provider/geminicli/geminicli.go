@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 
@@ -15,8 +16,11 @@ import (
 
 // Provider implements a provider using local Gemini CLI
 type Provider struct {
-	model   string
-	cliPath string
+	model      string
+	cliPath    string
+	yoloMode   bool   // Auto approve all actions
+	sandbox    bool   // Run in sandbox mode
+	systemPrompt string
 }
 
 // Option configures the Provider
@@ -36,11 +40,33 @@ func WithCLIPath(path string) Option {
 	}
 }
 
+// WithYoloMode enables auto-approve all actions
+func WithYoloMode(enabled bool) Option {
+	return func(p *Provider) {
+		p.yoloMode = enabled
+	}
+}
+
+// WithSandbox enables sandbox mode
+func WithSandbox(enabled bool) Option {
+	return func(p *Provider) {
+		p.sandbox = enabled
+	}
+}
+
+// WithSystemPrompt sets the system prompt
+func WithSystemPrompt(prompt string) Option {
+	return func(p *Provider) {
+		p.systemPrompt = prompt
+	}
+}
+
 // New creates a new Gemini CLI provider
 func New(opts ...Option) *Provider {
 	p := &Provider{
-		model:   "gemini-2.5-pro",
-		cliPath: "gemini",
+		model:    "", // empty means auto (gemini-3)
+		cliPath:  "gemini",
+		yoloMode: true, // Default to yolo mode for agentic use
 	}
 
 	for _, opt := range opts {
@@ -57,7 +83,7 @@ func (p *Provider) Name() string {
 
 // SupportedModels returns supported models
 func (p *Provider) SupportedModels() []string {
-	return []string{"gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
+	return []string{"gemini-3", "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.0-flash"}
 }
 
 // SupportsFeature checks if a feature is supported
@@ -103,28 +129,49 @@ func (p *Provider) CreateMessage(ctx context.Context, req *provider.Request) (*p
 
 // CreateMessageStream performs a streaming completion using Gemini CLI
 func (p *Provider) CreateMessageStream(ctx context.Context, req *provider.Request) (provider.StreamReader, error) {
-	// Build prompt from messages
-	var prompt strings.Builder
-	for _, msg := range req.Messages {
-		for _, block := range msg.Content {
-			if tb, ok := block.(*provider.TextBlock); ok {
-				if msg.Role == provider.RoleUser {
-					prompt.WriteString(tb.Text)
-					prompt.WriteString("\n")
+	// Build prompt from the last user message
+	var prompt string
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		msg := req.Messages[i]
+		if msg.Role == provider.RoleUser {
+			for _, block := range msg.Content {
+				if tb, ok := block.(*provider.TextBlock); ok {
+					prompt = tb.Text
+					break
 				}
 			}
+			break
 		}
 	}
 
-	// Build command
-	args := []string{
-		"-o", "stream-json", // Stream JSON output
-		"-y",              // YOLO mode - auto approve
-		"-m", p.model,
-		prompt.String(),
+	if prompt == "" {
+		return nil, fmt.Errorf("no user message found")
 	}
 
+	// Build command arguments
+	args := []string{
+		"-o", "stream-json", // Stream JSON output
+	}
+
+	if p.yoloMode {
+		args = append(args, "-y") // Auto approve all actions
+	}
+
+	if p.sandbox {
+		args = append(args, "-s") // Sandbox mode
+	}
+
+	if p.model != "" {
+		args = append(args, "-m", p.model)
+	}
+
+	// Add the prompt as positional argument
+	args = append(args, prompt)
+
 	cmd := exec.CommandContext(ctx, p.cliPath, args...)
+
+	// Redirect stderr to discard (contains startup logs)
+	cmd.Stderr = os.Stderr // or io.Discard if you want to hide all stderr
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -149,12 +196,15 @@ func (p *Provider) CreateMessageStream(ctx context.Context, req *provider.Reques
 
 // streamReader implements provider.StreamReader
 type streamReader struct {
-	cmd      *exec.Cmd
-	stdout   io.ReadCloser
-	scanner  *bufio.Scanner
-	done     bool
-	started  bool
-	lastText string
+	cmd       *exec.Cmd
+	stdout    io.ReadCloser
+	scanner   *bufio.Scanner
+	done      bool
+	started   bool
+	blockStarted bool
+	lastText  string
+	sessionID string
+	model     string
 }
 
 func (r *streamReader) Recv() (provider.StreamingEvent, error) {
@@ -162,21 +212,14 @@ func (r *streamReader) Recv() (provider.StreamingEvent, error) {
 		return nil, io.EOF
 	}
 
-	// Send MessageStartEvent first
-	if !r.started {
-		r.started = true
-		return &provider.MessageStartEvent{
-			Message: &provider.Response{
-				ID:      "gemini-cli",
-				Model:   "gemini-cli",
-				Content: make([]provider.ContentBlock, 0),
-			},
-		}, nil
-	}
-
 	for r.scanner.Scan() {
 		line := r.scanner.Text()
 		if line == "" {
+			continue
+		}
+
+		// Skip non-JSON lines (startup logs)
+		if !strings.HasPrefix(line, "{") {
 			continue
 		}
 
@@ -186,24 +229,70 @@ func (r *streamReader) Recv() (provider.StreamingEvent, error) {
 		}
 
 		switch event.Type {
-		case "message", "assistant":
-			// Extract text content
-			for _, block := range event.Content {
-				if block.Type == "text" && block.Text != "" {
-					fullText := block.Text
-					if len(fullText) > len(r.lastText) {
-						delta := fullText[len(r.lastText):]
-						r.lastText = fullText
-						return &provider.ContentBlockDeltaEvent{
-							Index: 0,
-							Delta: &provider.TextDelta{Text: delta},
-						}, nil
-					}
+		case "init":
+			// Session started
+			r.sessionID = event.SessionID
+			r.model = event.Model
+			if !r.started {
+				r.started = true
+				return &provider.MessageStartEvent{
+					Message: &provider.Response{
+						ID:      r.sessionID,
+						Model:   r.model,
+						Content: make([]provider.ContentBlock, 0),
+					},
+				}, nil
+			}
+
+		case "message":
+			// Only process assistant messages
+			if event.Role != "assistant" {
+				continue
+			}
+
+			// Send ContentBlockStartEvent if not started
+			if !r.blockStarted {
+				r.blockStarted = true
+				return &provider.ContentBlockStartEvent{
+					Index:        0,
+					ContentBlock: &provider.TextBlock{},
+				}, nil
+			}
+
+			// Handle delta content
+			if event.Content != "" {
+				// Gemini CLI sends full content with delta:true
+				// We need to compute the actual delta
+				fullText := event.Content
+				if len(fullText) > len(r.lastText) {
+					delta := fullText[len(r.lastText):]
+					r.lastText = fullText
+					return &provider.ContentBlockDeltaEvent{
+						Index: 0,
+						Delta: &provider.TextDelta{Text: delta},
+					}, nil
+				} else if fullText != r.lastText {
+					// Content changed completely (shouldn't happen often)
+					r.lastText = fullText
+					return &provider.ContentBlockDeltaEvent{
+						Index: 0,
+						Delta: &provider.TextDelta{Text: fullText},
+					}, nil
 				}
 			}
-		case "result", "turn_complete", "end":
+
+		case "result":
+			// Turn complete
 			r.done = true
-			return &provider.MessageStopEvent{}, nil
+			return &provider.MessageDeltaEvent{
+				Delta: &provider.MessageDelta{
+					StopReason: provider.StopReasonEndTurn,
+				},
+				Usage: &provider.Usage{
+					InputTokens:  event.Stats.InputTokens,
+					OutputTokens: event.Stats.OutputTokens,
+				},
+			}, nil
 		}
 	}
 
@@ -222,9 +311,19 @@ func (r *streamReader) Close() error {
 
 // cliEvent represents a Gemini CLI JSON event
 type cliEvent struct {
-	Type    string `json:"type"`
-	Content []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	} `json:"content"`
+	Type      string `json:"type"`
+	Timestamp string `json:"timestamp"`
+	SessionID string `json:"session_id,omitempty"`
+	Model     string `json:"model,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	Delta     bool   `json:"delta,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Stats     struct {
+		TotalTokens  int `json:"total_tokens"`
+		InputTokens  int `json:"input_tokens"`
+		OutputTokens int `json:"output_tokens"`
+		DurationMS   int `json:"duration_ms"`
+		ToolCalls    int `json:"tool_calls"`
+	} `json:"stats,omitempty"`
 }
