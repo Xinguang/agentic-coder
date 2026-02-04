@@ -98,7 +98,7 @@ func New(cfg Config) Model {
 	ti := textinput.New()
 	ti.Placeholder = ""
 	ti.Focus()
-	ti.Prompt = promptStyle.Render("> ")
+	ti.Prompt = ""  // We'll render prompt ourselves
 	ti.CharLimit = 0
 
 	s := spinner.New()
@@ -145,8 +145,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if input != "" {
 					m.textinput.Reset()
 
-					// Echo user input
-					m.print(fmt.Sprintf("\n%s %s\n\n", promptStyle.Render(">"), userStyle.Render(input)))
+					// Echo user input (the prompt was already shown, just echo the text)
+					m.print(userStyle.Render(input) + "\n\n")
 
 					// Handle commands
 					if strings.HasPrefix(input, "/") {
@@ -251,17 +251,18 @@ func (m Model) View() string {
 	// Output content
 	b.WriteString(m.output.String())
 
-	// Status line when streaming
+	// Status line when streaming (show above prompt)
 	if m.isStreaming {
 		status := m.thinkingText
 		if status == "" {
-			status = "Processing"
+			status = "Thinking"
 		}
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  %s %s...", m.spinner.View(), status)))
-		b.WriteString("\n\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("%s %s...", m.spinner.View(), status)))
+		b.WriteString("\n")
 	}
 
-	// Input line (always visible)
+	// Prompt line (always visible): > input_here
+	b.WriteString(promptStyle.Render("> "))
 	b.WriteString(m.textinput.View())
 
 	return b.String()
