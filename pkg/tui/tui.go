@@ -151,6 +151,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
+		case tea.KeyEsc:
+			// Clear input or stop streaming on Escape
+			if m.textinput.Value() != "" {
+				m.textinput.Reset()
+				return m, nil
+			} else if m.isStreaming {
+				m.interrupted = true
+				m.print(errorStyle.Render("\n⚠ Interrupted\n"))
+				return m, func() tea.Msg { return InterruptMsg{} }
+			}
+			return m, nil
+
 		case tea.KeyCtrlC:
 			if m.isStreaming {
 				m.interrupted = true
@@ -195,6 +207,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyCtrlD:
 			return m, tea.Quit
+
+		case tea.KeyTab:
+			// Tab: ignore (could be used for autocomplete later)
+			return m, nil
 
 		case tea.KeyPgUp:
 			m.autoScroll = false

@@ -3,8 +3,11 @@ package tui
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/xinguang/agentic-coder/pkg/engine"
@@ -23,14 +26,15 @@ type Runner struct {
 	cancelLock sync.Mutex
 
 	// Message channel for async updates
-	msgChan chan tea.Msg
+	msgChan       chan tea.Msg
+	droppedMsgCnt atomic.Uint64
 }
 
 // NewRunner creates a new TUI runner
 func NewRunner(eng *engine.Engine, cfg Config) *Runner {
 	r := &Runner{
 		engine:  eng,
-		msgChan: make(chan tea.Msg, 100),
+		msgChan: make(chan tea.Msg, 500), // Increased from 100 to 500
 	}
 
 	// Set up the submit callback
@@ -123,12 +127,24 @@ func (r *Runner) handleSubmit(input string, opID uint64) tea.Cmd {
 	}
 }
 
-// sendMsg sends a message to the TUI
+// sendMsg sends a message to the TUI with timeout
 func (r *Runner) sendMsg(msg tea.Msg) {
 	select {
 	case r.msgChan <- msg:
+		return
 	default:
-		// Channel full, drop message
+		// Channel full, try with timeout before dropping
+	}
+
+	// Wait up to 100ms for channel to have space
+	select {
+	case r.msgChan <- msg:
+	case <-time.After(100 * time.Millisecond):
+		// Still full after timeout, drop message
+		cnt := r.droppedMsgCnt.Add(1)
+		if cnt%10 == 1 {
+			log.Printf("WARNING: Message channel full, dropped %d messages total", cnt)
+		}
 	}
 }
 
