@@ -255,7 +255,13 @@ func (m Model) View() string {
 	}
 
 	// Output content
-	b.WriteString(m.output.String())
+	output := m.output.String()
+	b.WriteString(output)
+
+	// Ensure output ends with newline before prompt
+	if len(output) > 0 && !strings.HasSuffix(output, "\n") {
+		b.WriteString("\n")
+	}
 
 	// Status line when streaming (show above prompt)
 	if m.isStreaming {
