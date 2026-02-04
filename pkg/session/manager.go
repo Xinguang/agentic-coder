@@ -10,14 +10,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xinguang/agentic-coder/pkg/config"
 )
 
 // SessionManager manages multiple sessions
 type SessionManager struct {
-	storage      Storage
-	activeSess   map[string]*Session
-	projectPath  string
-	claudeDir    string // .claude directory path
+	storage     Storage
+	activeSess  map[string]*Session
+	projectPath string
+	appDir      string // app data directory
 
 	mu sync.RWMutex
 }
@@ -25,26 +27,26 @@ type SessionManager struct {
 // ManagerOptions holds options for SessionManager
 type ManagerOptions struct {
 	ProjectPath string
-	ClaudeDir   string // defaults to ~/.claude
+	AppDir      string // defaults to ~/.agentic-coder
 }
 
 // NewSessionManager creates a new session manager
 func NewSessionManager(opts *ManagerOptions) (*SessionManager, error) {
-	claudeDir := opts.ClaudeDir
-	if claudeDir == "" {
-		home, err := os.UserHomeDir()
+	appDir := opts.AppDir
+	if appDir == "" {
+		var err error
+		appDir, err = config.GetAppDir()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get home directory: %w", err)
+			return nil, fmt.Errorf("failed to get app directory: %w", err)
 		}
-		claudeDir = filepath.Join(home, ".claude")
 	}
 
-	// Ensure claude directory exists
-	if err := os.MkdirAll(claudeDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create claude directory: %w", err)
+	// Ensure app directory exists
+	if err := os.MkdirAll(appDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create app directory: %w", err)
 	}
 
-	storage, err := NewFileStorage(claudeDir, opts.ProjectPath)
+	storage, err := NewFileStorage(appDir, opts.ProjectPath)
 	if err != nil {
 		return nil, err
 	}
@@ -53,7 +55,7 @@ func NewSessionManager(opts *ManagerOptions) (*SessionManager, error) {
 		storage:     storage,
 		activeSess:  make(map[string]*Session),
 		projectPath: opts.ProjectPath,
-		claudeDir:   claudeDir,
+		appDir:      appDir,
 	}, nil
 }
 
@@ -156,17 +158,16 @@ type FileStorage struct {
 }
 
 // NewFileStorage creates a new file-based storage
-func NewFileStorage(claudeDir, projectPath string) (*FileStorage, error) {
-	// Create project-specific directory
-	// Hash the project path for directory name
-	projectDir := filepath.Join(claudeDir, "projects", sanitizePath(projectPath))
+func NewFileStorage(appDir, projectPath string) (*FileStorage, error) {
+	// Create project-specific directory under sessions/
+	projectDir := filepath.Join(appDir, "sessions", sanitizePath(projectPath))
 
 	if err := os.MkdirAll(projectDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create project directory: %w", err)
 	}
 
 	return &FileStorage{
-		baseDir:     claudeDir,
+		baseDir:     appDir,
 		projectDir:  projectDir,
 		projectPath: projectPath,
 	}, nil

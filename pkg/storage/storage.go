@@ -395,10 +395,10 @@ func GetDefaultStoragePath() (string, error) {
 		return "", err
 	}
 
-	return filepath.Join(homeDir, ".claude", "data"), nil
+	return filepath.Join(homeDir, ".agentic-coder", "data"), nil
 }
 
 // GetProjectStoragePath returns the project storage path
 func GetProjectStoragePath(projectPath string) string {
-	return filepath.Join(projectPath, ".claude")
+	return filepath.Join(projectPath, ".agentic-coder")
 }

@@ -123,12 +123,12 @@ func NewConfigManager() (*ConfigManager, error) {
 	cm := &ConfigManager{}
 
 	// Determine config paths
-	homeDir, err := os.UserHomeDir()
+	configPath, err := GetConfigPath()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get home directory: %w", err)
+		return nil, fmt.Errorf("failed to get config path: %w", err)
 	}
 
-	cm.globalPath = filepath.Join(homeDir, ".claude", "settings.json")
+	cm.globalPath = configPath
 
 	return cm, nil
 }
@@ -144,7 +144,7 @@ func (cm *ConfigManager) Load(projectPath string) error {
 
 	// Load project config if provided
 	if projectPath != "" {
-		cm.projectPath = filepath.Join(projectPath, ".claude", "settings.json")
+		cm.projectPath = GetProjectConfigPath(projectPath)
 		cm.projectConfig = DefaultConfig()
 		if err := cm.loadFromFile(cm.projectPath, cm.projectConfig); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("failed to load project config: %w", err)
