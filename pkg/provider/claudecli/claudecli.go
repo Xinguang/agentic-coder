@@ -137,10 +137,14 @@ func (p *Provider) CreateMessageStream(ctx context.Context, req *provider.Reques
 		return nil, fmt.Errorf("failed to start claude cli: %w", err)
 	}
 
+	// Create scanner with larger buffer for long JSON lines
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max
+
 	return &streamReader{
 		cmd:     cmd,
 		stdout:  stdout,
-		scanner: bufio.NewScanner(stdout),
+		scanner: scanner,
 		done:    false,
 	}, nil
 }
