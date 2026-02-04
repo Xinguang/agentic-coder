@@ -210,21 +210,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyUp:
-			// Allow scrolling with arrow keys when not typing
-			if m.textinput.Value() == "" {
-				m.autoScroll = false
-				m.viewport.LineUp(1)
-				return m, nil
-			}
+			// Allow scrolling with arrow keys (Ctrl+Up for scrolling when typing)
+			m.autoScroll = false
+			m.viewport.LineUp(1)
+			return m, nil
 
 		case tea.KeyDown:
-			if m.textinput.Value() == "" {
-				m.viewport.LineDown(1)
-				if m.viewport.AtBottom() {
-					m.autoScroll = true
-				}
-				return m, nil
+			// Allow scrolling with arrow keys (Ctrl+Down for scrolling when typing)
+			m.viewport.LineDown(1)
+			if m.viewport.AtBottom() {
+				m.autoScroll = true
 			}
+			return m, nil
 		}
 
 	case tea.WindowSizeMsg:
@@ -309,10 +306,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinkingText = ""
 			if msg.Error != nil && !m.interrupted {
 				m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
-			} else if !m.interrupted {
-				// Show completion indicator
-				m.print(dimStyle.Render("\n────────────────────────────────────────\n"))
 			}
+			m.print("\n")
 			m.updateViewport()
 		}
 	}

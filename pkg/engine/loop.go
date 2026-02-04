@@ -158,6 +158,14 @@ func (e *Engine) runLoop(ctx context.Context) error {
 		}
 
 		// Check stop condition
+		if resp.StopReason == provider.StopReasonMaxTokens {
+			// Response was truncated due to token limit, ask to continue
+			if e.onText != nil {
+				e.onText("\n")
+			}
+			e.session.AddUserMessage("continue")
+			continue
+		}
 		if resp.StopReason == provider.StopReasonEndTurn || !hasToolUse {
 			return nil
 		}
