@@ -88,13 +88,30 @@ type Model struct {
 	version      string
 	sessionID    string // Short session ID
 	messageCount int    // Messages in session (for resumed sessions)
-	width        int
-	height       int
-	onSubmit     SubmitCallback
-	lastActivity time.Time
-	showWelcome  bool
-	ready        bool // Viewport ready after first WindowSizeMsg
+	width           int
+	height          int
+	onSubmit        SubmitCallback
+	onListSessions  ListSessionsCallback
+	onResumeSession ResumeSessionCallback
+	onNewSession    NewSessionCallback
+	lastActivity    time.Time
+	showWelcome     bool
+	ready           bool // Viewport ready after first WindowSizeMsg
 }
+
+// SessionInfo holds session metadata for display
+type SessionInfo struct {
+	ID           string
+	Summary      string
+	MessageCount int
+	UpdatedAt    string
+	IsCurrent    bool
+}
+
+// SessionCallback types
+type ListSessionsCallback func() []SessionInfo
+type ResumeSessionCallback func(id string) (messageCount int, err error)
+type NewSessionCallback func() (sessionID string, err error)
 
 // Config holds TUI configuration
 type Config struct {
@@ -104,6 +121,9 @@ type Config struct {
 	SessionID    string // Short session ID for display
 	MessageCount int    // Number of messages in resumed session
 	OnSubmit     SubmitCallback
+	OnListSessions  ListSessionsCallback
+	OnResumeSession ResumeSessionCallback
+	OnNewSession    NewSessionCallback
 }
 
 // New creates a new TUI model
@@ -122,19 +142,22 @@ func New(cfg Config) Model {
 	vp.SetContent("")
 
 	return Model{
-		textinput:    ti,
-		spinner:      s,
-		viewport:     vp,
-		output:       &strings.Builder{},
-		autoScroll:   true,
-		model:        cfg.Model,
-		cwd:          cfg.CWD,
-		version:      cfg.Version,
-		sessionID:    cfg.SessionID,
-		messageCount: cfg.MessageCount,
-		onSubmit:     cfg.OnSubmit,
-		lastActivity: time.Now(),
-		showWelcome:  true,
+		textinput:       ti,
+		spinner:         s,
+		viewport:        vp,
+		output:          &strings.Builder{},
+		autoScroll:      true,
+		model:           cfg.Model,
+		cwd:             cfg.CWD,
+		version:         cfg.Version,
+		sessionID:       cfg.SessionID,
+		messageCount:    cfg.MessageCount,
+		onSubmit:        cfg.OnSubmit,
+		onListSessions:  cfg.OnListSessions,
+		onResumeSession: cfg.OnResumeSession,
+		onNewSession:    cfg.OnNewSession,
+		lastActivity:    time.Now(),
+		showWelcome:     true,
 	}
 }
 
@@ -460,6 +483,85 @@ func (m *Model) handleCommand(input string) tea.Cmd {
 		} else {
 			m.print(fmt.Sprintf("Model: %s\n", m.model))
 		}
+
+	case "/history", "/sessions":
+		if m.onListSessions == nil {
+			m.print(errorStyle.Render("Session management not available\n"))
+			return nil
+		}
+		sessions := m.onListSessions()
+		if len(sessions) == 0 {
+			m.print(dimStyle.Render("No sessions found\n"))
+			return nil
+		}
+		m.print(dimStyle.Render("\n📋 Session History\n"))
+		m.print(dimStyle.Render("─────────────────────────────────────────\n"))
+		for i, s := range sessions {
+			marker := "  "
+			if s.IsCurrent {
+				marker = "▶ "
+			}
+			m.print(fmt.Sprintf("%s%d. %s", marker, i+1, s.ID))
+			if s.Summary != "" {
+				m.print(dimStyle.Render(fmt.Sprintf(" - %s", s.Summary)))
+			}
+			m.print(dimStyle.Render(fmt.Sprintf(" (%d msgs, %s)\n", s.MessageCount, s.UpdatedAt)))
+		}
+		m.print(dimStyle.Render("─────────────────────────────────────────\n"))
+		m.print(dimStyle.Render("Use /resume <number> to switch session\n\n"))
+
+	case "/resume":
+		if m.onResumeSession == nil {
+			m.print(errorStyle.Render("Session management not available\n"))
+			return nil
+		}
+		if len(parts) < 2 {
+			m.print(errorStyle.Render("Usage: /resume <session-id or number>\n"))
+			return nil
+		}
+		// Check if it's a number (from /history list)
+		sessionID := parts[1]
+		if m.onListSessions != nil {
+			if idx, err := fmt.Sscanf(parts[1], "%d", new(int)); err == nil && idx == 1 {
+				num := 0
+				fmt.Sscanf(parts[1], "%d", &num)
+				sessions := m.onListSessions()
+				if num > 0 && num <= len(sessions) {
+					sessionID = sessions[num-1].ID
+				}
+			}
+		}
+		msgCount, err := m.onResumeSession(sessionID)
+		if err != nil {
+			m.print(errorStyle.Render(fmt.Sprintf("Failed to resume: %v\n", err)))
+			return nil
+		}
+		m.sessionID = sessionID
+		if len(sessionID) > 8 {
+			m.sessionID = sessionID[:8]
+		}
+		m.messageCount = msgCount
+		m.print(successStyle.Render(fmt.Sprintf("✓ Resumed session: %s (%d messages)\n", m.sessionID, msgCount)))
+
+	case "/new":
+		if m.onNewSession == nil {
+			m.print(errorStyle.Render("Session management not available\n"))
+			return nil
+		}
+		sessionID, err := m.onNewSession()
+		if err != nil {
+			m.print(errorStyle.Render(fmt.Sprintf("Failed to create session: %v\n", err)))
+			return nil
+		}
+		m.sessionID = sessionID
+		if len(sessionID) > 8 {
+			m.sessionID = sessionID[:8]
+		}
+		m.messageCount = 0
+		m.output.Reset()
+		m.showWelcome = true
+		m.print(successStyle.Render(fmt.Sprintf("✓ New session: %s\n", m.sessionID)))
+
 	default:
 		m.print(errorStyle.Render(fmt.Sprintf("Unknown command: %s\n", parts[0])))
 	}
@@ -470,6 +572,9 @@ func (m *Model) helpText() string {
 	return dimStyle.Render(`
   Commands:
     /help      Show this help
+    /history   List session history
+    /resume N  Resume session (N = number or ID)
+    /new       Start new session
     /clear     Clear screen
     /model     Show/change model
     /exit      Exit
@@ -478,7 +583,8 @@ func (m *Model) helpText() string {
     Enter      Send message
     Ctrl+C     Interrupt / Exit
     Ctrl+D     Exit
-    ↑/↓        Scroll (when input empty)
+    Esc        Clear input / Cancel
+    ↑/↓        Scroll
     PgUp/PgDn  Scroll page
 `) + "\n"
 }

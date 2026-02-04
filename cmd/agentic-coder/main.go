@@ -476,12 +476,61 @@ func runChat(cmd *cobra.Command, args []string) error {
 		if len(sessionID) > 8 {
 			sessionID = sessionID[:8]
 		}
+
+		// Create a pointer to track current session for callbacks
+		currentSess := sess
+
 		runner := tui.NewRunner(eng, tui.Config{
 			Model:        sess.Model,
 			CWD:          cwd,
 			Version:      version,
 			SessionID:    sessionID,
 			MessageCount: len(sess.Messages),
+			OnListSessions: func() []tui.SessionInfo {
+				sessions, err := sessMgr.ListSessions()
+				if err != nil {
+					return nil
+				}
+				result := make([]tui.SessionInfo, 0, len(sessions))
+				for _, s := range sessions {
+					summary := ""
+					if s.MessageCount > 0 {
+						summary = fmt.Sprintf("%s", s.Model)
+					}
+					result = append(result, tui.SessionInfo{
+						ID:           s.ID,
+						Summary:      summary,
+						MessageCount: s.MessageCount,
+						UpdatedAt:    s.LastUpdated.Format("01/02 15:04"),
+						IsCurrent:    s.ID == currentSess.ID,
+					})
+				}
+				return result
+			},
+			OnResumeSession: func(id string) (int, error) {
+				newSess, err := sessMgr.GetSession(id)
+				if err != nil {
+					return 0, err
+				}
+				currentSess = newSess
+				eng.SetSession(newSess)
+				return len(newSess.Messages), nil
+			},
+			OnNewSession: func() (string, error) {
+				newSess, err := sessMgr.NewSession(&session.SessionOptions{
+					ProjectPath: cwd,
+					CWD:         cwd,
+					Model:       currentSess.Model,
+					Version:     version,
+					MaxTokens:   200000,
+				})
+				if err != nil {
+					return "", err
+				}
+				currentSess = newSess
+				eng.SetSession(newSess)
+				return newSess.ID, nil
+			},
 		})
 		return runner.Run()
 	}

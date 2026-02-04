@@ -102,6 +102,11 @@ type CallbackOptions struct {
 	OnError      func(err error)
 }
 
+// SetSession changes the current session
+func (e *Engine) SetSession(sess *session.Session) {
+	e.session = sess
+}
+
 // Run executes a single turn of conversation
 func (e *Engine) Run(ctx context.Context, userMessage string) error {
 	// Add user message to session
