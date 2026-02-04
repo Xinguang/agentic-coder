@@ -309,8 +309,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.thinkingText = ""
 			if msg.Error != nil && !m.interrupted {
 				m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
+			} else if !m.interrupted {
+				// Show completion indicator
+				m.print(dimStyle.Render("\n────────────────────────────────────────\n"))
 			}
-			m.print("\n")
 			m.updateViewport()
 		}
 	}
