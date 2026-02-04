@@ -175,6 +175,7 @@ export OPENAI_API_KEY="your-api-key"
   -h, --help           帮助信息
   -k, --api-key string API 密钥（覆盖已保存的凭证）
   -m, --model string   使用的模型（默认 "sonnet"）
+  -t, --tui            启用交互式 TUI 模式（分屏界面）
   -v, --verbose        启用详细输出
 ```
 

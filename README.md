@@ -174,6 +174,7 @@ Flags:
   -h, --help           help for agentic-coder
   -k, --api-key string API key (overrides saved credentials)
   -m, --model string   Model to use (default "sonnet")
+  -t, --tui            Enable interactive TUI mode (split-screen)
   -v, --verbose        Enable verbose output
 ```
 

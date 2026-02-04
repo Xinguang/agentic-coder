@@ -27,6 +27,7 @@ import (
 	"github.com/xinguang/agentic-coder/pkg/session"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 	"github.com/xinguang/agentic-coder/pkg/tool/builtin"
+	"github.com/xinguang/agentic-coder/pkg/tui"
 	"github.com/xinguang/agentic-coder/pkg/ui"
 	"github.com/xinguang/agentic-coder/pkg/workctx"
 )
@@ -36,6 +37,7 @@ var (
 	model   string
 	apiKey  string
 	verbose bool
+	useTUI  bool
 )
 
 func main() {
@@ -51,6 +53,7 @@ write, edit, and understand code using natural language.`,
 	rootCmd.PersistentFlags().StringVarP(&model, "model", "m", "sonnet", "Model: sonnet/opus/haiku, gemini, gpt4o, llama3.2/qwen (Ollama)")
 	rootCmd.PersistentFlags().StringVarP(&apiKey, "api-key", "k", "", "API key (defaults to ANTHROPIC_API_KEY env var)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.PersistentFlags().BoolVarP(&useTUI, "tui", "t", false, "Enable interactive TUI mode")
 
 	// Subcommands
 	rootCmd.AddCommand(versionCmd())
@@ -453,7 +456,17 @@ func runChat(cmd *cobra.Command, args []string) error {
 		SystemPrompt:  getSystemPrompt(),
 	})
 
-	// Set callbacks using ui package
+	// Use TUI mode if enabled
+	if useTUI {
+		runner := tui.NewRunner(eng, tui.Config{
+			Model:   sess.Model,
+			CWD:     cwd,
+			Version: version,
+		})
+		return runner.Run()
+	}
+
+	// Set callbacks using ui package (classic mode)
 	eng.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
 			fmt.Print(text)
@@ -758,7 +771,7 @@ func handleWorkCommand(args []string, ctx *chatContext) {
 		if ctx.workMgr.Current() != nil {
 			current := ctx.workMgr.Current()
 			ctx.printer.Info("Current work: %s - %s", current.ID, current.Title)
-			ctx.printer.Dim(current.Summary())
+			ctx.printer.Dim("%s", current.Summary())
 		} else {
 			contexts, _ := ctx.workMgr.List()
 			items := make([]ui.WorkContextItem, 0, len(contexts))
