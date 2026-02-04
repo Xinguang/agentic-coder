@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/xinguang/agentic-coder/pkg/provider"
 )
 
 // SessionManager manages multiple sessions
@@ -288,12 +290,51 @@ func (s *FileStorage) List() ([]*SessionInfo, error) {
 				continue
 			}
 
+			// If no title, try to generate from first user message
+			if meta.Title == "" && meta.MessageCount > 0 {
+				meta.Title = s.extractTitleFromSession(meta.ID)
+				// Save updated metadata
+				if meta.Title != "" {
+					if data, err := json.MarshalIndent(meta, "", "  "); err == nil {
+						os.WriteFile(metaPath, data, 0644)
+					}
+				}
+			}
+
 			sessions = append(sessions, &meta)
 		}
 	}
 
 	return sessions, nil
 }
+
+// extractTitleFromSession reads the first user message and generates a title
+func (s *FileStorage) extractTitleFromSession(id string) string {
+	transcriptPath := filepath.Join(s.projectDir, id+".jsonl")
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+
+	decoder := json.NewDecoder(f)
+	for {
+		var entry TranscriptEntry
+		if err := decoder.Decode(&entry); err != nil {
+			break
+		}
+		// Find first user message
+		if entry.Type == EntryTypeUser && entry.Message != nil {
+			for _, block := range entry.Message.Content {
+				if tb, ok := block.(*provider.TextBlock); ok && tb.Text != "" {
+					return truncateTitle(tb.Text, 50)
+				}
+			}
+		}
+	}
+	return ""
+}
+
 
 // Delete deletes a session
 func (s *FileStorage) Delete(id string) error {
