@@ -46,7 +46,7 @@ func NewRunner(eng *engine.Engine, cfg Config) *Runner {
 func (r *Runner) Run() error {
 	r.program = tea.NewProgram(
 		*r.model,
-		// Note: Not using WithAltScreen() or mouse capture to allow text selection/copy
+		tea.WithAltScreen(), // Use alt screen for stable rendering
 	)
 
 	// Start message forwarder
@@ -66,7 +66,7 @@ func (r *Runner) forwardMessages() {
 }
 
 // handleSubmit is called when user submits input
-func (r *Runner) handleSubmit(input string) tea.Cmd {
+func (r *Runner) handleSubmit(input string, opID uint64) tea.Cmd {
 	return func() tea.Msg {
 		// Cancel any existing operation
 		r.cancelLock.Lock()
@@ -111,7 +111,7 @@ func (r *Runner) handleSubmit(input string) tea.Cmd {
 				r.sendMsg(ToolResultMsg{Name: name, Success: success, Summary: summary})
 			},
 			OnError: func(err error) {
-				r.sendMsg(StreamDoneMsg{Error: err})
+				r.sendMsg(StreamDoneMsg{Error: err, OpID: opID})
 			},
 		})
 
@@ -119,7 +119,7 @@ func (r *Runner) handleSubmit(input string) tea.Cmd {
 		err := r.engine.Run(ctx, input)
 
 		// Signal completion
-		return StreamDoneMsg{Error: err}
+		return StreamDoneMsg{Error: err, OpID: opID}
 	}
 }
 

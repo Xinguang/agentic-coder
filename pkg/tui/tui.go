@@ -59,12 +59,16 @@ type (
 		Success bool
 		Summary string
 	}
-	StreamDoneMsg struct{ Error error }
-	InterruptMsg  struct{}
+	StreamDoneMsg struct {
+		Error error
+		OpID  uint64 // Operation ID to track which operation completed
+	}
+	InterruptMsg struct{}
 )
 
 // SubmitCallback is called when user submits input
-type SubmitCallback func(input string) tea.Cmd
+// opID is passed to track the operation and return in StreamDoneMsg
+type SubmitCallback func(input string, opID uint64) tea.Cmd
 
 // Model represents the TUI state
 type Model struct {
@@ -75,6 +79,7 @@ type Model struct {
 	isThinking   bool
 	thinkingText string
 	interrupted  bool
+	currentOpID  uint64 // Current operation ID
 	model        string
 	cwd          string
 	version      string
@@ -164,10 +169,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.isThinking = true
 				m.thinkingText = "Thinking"
 				m.interrupted = false
+				m.currentOpID++ // Increment operation ID
 				m.lastActivity = time.Now()
 
 				if m.onSubmit != nil {
-					return m, tea.Batch(m.onSubmit(input), m.spinner.Tick)
+					return m, tea.Batch(m.onSubmit(input, m.currentOpID), m.spinner.Tick)
 				}
 			}
 			return m, nil
@@ -223,13 +229,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case StreamDoneMsg:
-		m.isStreaming = false
-		m.isThinking = false
-		m.thinkingText = ""
-		if msg.Error != nil && !m.interrupted {
-			m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
+		// Only process if this is the current operation (ignore stale messages)
+		if msg.OpID == m.currentOpID {
+			m.isStreaming = false
+			m.isThinking = false
+			m.thinkingText = ""
+			if msg.Error != nil && !m.interrupted {
+				m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
+			}
+			m.print("\n")
 		}
-		m.print("\n")
 	}
 
 	// Always update text input (allow typing while streaming)
@@ -354,6 +363,6 @@ func SendToolResult(name string, success bool, summary string) tea.Cmd {
 	return func() tea.Msg { return ToolResultMsg{Name: name, Success: success, Summary: summary} }
 }
 
-func SendStreamDone(err error) tea.Cmd {
-	return func() tea.Msg { return StreamDoneMsg{Error: err} }
+func SendStreamDone(err error, opID uint64) tea.Cmd {
+	return func() tea.Msg { return StreamDoneMsg{Error: err, OpID: opID} }
 }
