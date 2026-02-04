@@ -565,6 +565,7 @@ func (m *Model) handleCommand(input string) tea.Cmd {
 	default:
 		m.print(errorStyle.Render(fmt.Sprintf("Unknown command: %s\n", parts[0])))
 	}
+	m.updateViewport()
 	return nil
 }
 
