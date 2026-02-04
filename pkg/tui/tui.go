@@ -89,7 +89,7 @@ type Model struct {
 	textarea textarea.Model
 
 	// State
-	content      strings.Builder
+	content      *strings.Builder // Must be pointer to avoid copy issues
 	ready        bool
 	isStreaming  bool
 	interrupted  bool
@@ -134,6 +134,7 @@ func New(cfg Config) Model {
 
 	m := Model{
 		textarea:     ta,
+		content:      &strings.Builder{},
 		model:        cfg.Model,
 		cwd:          cfg.CWD,
 		onSubmit:     cfg.OnSubmit,

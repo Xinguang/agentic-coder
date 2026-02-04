@@ -53,7 +53,8 @@ write, edit, and understand code using natural language.`,
 	rootCmd.PersistentFlags().StringVarP(&model, "model", "m", "sonnet", "Model: sonnet/opus/haiku, gemini, gpt4o, llama3.2/qwen (Ollama)")
 	rootCmd.PersistentFlags().StringVarP(&apiKey, "api-key", "k", "", "API key (defaults to ANTHROPIC_API_KEY env var)")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
-	rootCmd.PersistentFlags().BoolVarP(&useTUI, "tui", "t", false, "Enable interactive TUI mode")
+	rootCmd.PersistentFlags().BoolVarP(&useTUI, "tui", "t", true, "Enable interactive TUI mode (default: true)")
+	rootCmd.PersistentFlags().Bool("no-tui", false, "Disable TUI mode, use classic mode")
 
 	// Subcommands
 	rootCmd.AddCommand(versionCmd())
@@ -456,8 +457,11 @@ func runChat(cmd *cobra.Command, args []string) error {
 		SystemPrompt:  getSystemPrompt(),
 	})
 
-	// Use TUI mode if enabled
-	if useTUI {
+	// Check for --no-tui flag
+	noTUI, _ := cmd.Flags().GetBool("no-tui")
+
+	// Use TUI mode if enabled and not disabled
+	if useTUI && !noTUI {
 		runner := tui.NewRunner(eng, tui.Config{
 			Model:   sess.Model,
 			CWD:     cwd,
