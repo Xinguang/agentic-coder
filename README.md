@@ -2,6 +2,32 @@
 
 An AI-powered coding assistant CLI that supports multiple AI providers and local CLI tools.
 
+## Why Agentic Coder?
+
+### No Vendor Lock-in
+Switch between AI providers with a single flag. Use Claude today, GPT-4 tomorrow, or run locally with Ollama - your workflow stays the same.
+
+### Use Your Existing CLI Tools
+Already have Claude Code, Codex, or Gemini CLI installed? Agentic Coder can wrap them directly - no API keys needed, leverage your existing subscriptions and login sessions.
+
+### Unified Interface
+One tool to rule them all. Same commands, same tools, same experience across 8+ AI providers. No need to learn different interfaces for different models.
+
+### Privacy-First Options
+Run completely offline with Ollama, or use local CLI tools that handle authentication independently. Your code never has to leave your machine.
+
+### Built for Developers
+- **Single Binary**: Written in Go, compiles to a single executable with zero dependencies
+- **Cross-Platform**: Works on macOS, Linux, and Windows
+- **Fast Startup**: No runtime overhead, starts instantly
+- **Extensible**: Easy to add new providers or tools
+
+### Rich Tool Ecosystem
+19 built-in tools for real coding tasks: file operations, shell commands, web search, Jupyter notebooks, and more. The AI can actually help you code, not just chat.
+
+### Cost Optimization
+Mix and match providers based on task complexity. Use cheaper models for simple tasks, premium models for complex ones. Local CLI providers use your existing subscriptions.
+
 ## Features
 
 - **Multi-Provider Support**: Connect to various AI providers through API or local CLI
