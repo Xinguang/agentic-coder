@@ -290,13 +290,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinkingText = msg.Name
 		m.lastActivity = time.Now()
 		m.print(fmt.Sprintf("\n%s %s\n", toolStyle.Render("⚡"), msg.Name))
-		for k, v := range msg.Params {
-			valStr := fmt.Sprintf("%v", v)
-			if len(valStr) > 80 {
-				valStr = valStr[:80] + "..."
+
+		// For Edit tool, show full diff
+		if msg.Name == "Edit" {
+			if filePath, ok := msg.Params["file_path"].(string); ok {
+				m.print(dimStyle.Render(fmt.Sprintf("  file: %s\n", filePath)))
 			}
-			valStr = strings.ReplaceAll(valStr, "\n", "\\n")
-			m.print(dimStyle.Render(fmt.Sprintf("  %s: %s\n", k, valStr)))
+			if oldStr, ok := msg.Params["old_string"].(string); ok && oldStr != "" {
+				m.print(errorStyle.Render("  - ") + dimStyle.Render(formatCodeBlock(oldStr)) + "\n")
+			}
+			if newStr, ok := msg.Params["new_string"].(string); ok && newStr != "" {
+				m.print(successStyle.Render("  + ") + dimStyle.Render(formatCodeBlock(newStr)) + "\n")
+			}
+		} else if msg.Name == "Write" {
+			if filePath, ok := msg.Params["file_path"].(string); ok {
+				m.print(dimStyle.Render(fmt.Sprintf("  file: %s\n", filePath)))
+			}
+			if content, ok := msg.Params["content"].(string); ok {
+				lines := strings.Split(content, "\n")
+				m.print(dimStyle.Render(fmt.Sprintf("  content: %d lines\n", len(lines))))
+			}
+		} else {
+			// Default: show params with truncation
+			for k, v := range msg.Params {
+				valStr := fmt.Sprintf("%v", v)
+				if len(valStr) > 100 {
+					valStr = valStr[:100] + "..."
+				}
+				valStr = strings.ReplaceAll(valStr, "\n", "\\n")
+				m.print(dimStyle.Render(fmt.Sprintf("  %s: %s\n", k, valStr)))
+			}
 		}
 		m.updateViewport()
 
@@ -466,6 +489,20 @@ func shortenPath(path string, maxLen int) string {
 		return path
 	}
 	return "..." + path[len(path)-maxLen+3:]
+}
+
+// formatCodeBlock formats a code block for display, limiting lines
+func formatCodeBlock(code string) string {
+	lines := strings.Split(code, "\n")
+	maxLines := 10
+	if len(lines) > maxLines {
+		result := strings.Join(lines[:maxLines], "\n    ")
+		return fmt.Sprintf("\n    %s\n    ... (%d more lines)", result, len(lines)-maxLines)
+	}
+	if len(lines) > 1 {
+		return "\n    " + strings.Join(lines, "\n    ")
+	}
+	return code
 }
 
 // Message constructors for external use
