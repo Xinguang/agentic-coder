@@ -9,8 +9,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/xinguang/agentic-coder/pkg/config"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 )
+
+// InstructionFileName is our own instruction file name
+const InstructionFileName = "AGENT.md"
 
 // PromptBuilder builds system prompts for the agent
 type PromptBuilder struct {
@@ -31,7 +35,8 @@ type PromptBuilder struct {
 
 	// Custom sections
 	CustomInstructions string
-	ClaudeMD           string
+	ClaudeMD           string // Legacy: also loads CLAUDE.md for compatibility
+	AgentMD            string // Our own instruction file
 }
 
 // NewPromptBuilder creates a new prompt builder
@@ -66,8 +71,8 @@ func (p *PromptBuilder) Build() string {
 	// Environment info
 	sections = append(sections, p.buildEnvironmentInfo())
 
-	// Custom instructions (CLAUDE.md)
-	if p.ClaudeMD != "" {
+	// Custom instructions (AGENT.md and CLAUDE.md)
+	if p.AgentMD != "" || p.ClaudeMD != "" {
 		sections = append(sections, p.buildClaudeMD())
 	}
 
@@ -272,24 +277,77 @@ You are powered by agentic-coder version %s.`,
 
 // buildClaudeMD returns custom instructions section
 func (p *PromptBuilder) buildClaudeMD() string {
+	var sections []string
+
+	// Add AGENT.md first (higher priority)
+	if p.AgentMD != "" {
+		sections = append(sections, fmt.Sprintf(`<agent_md>
+%s
+</agent_md>`, p.AgentMD))
+	}
+
+	// Add CLAUDE.md for compatibility
+	if p.ClaudeMD != "" {
+		sections = append(sections, fmt.Sprintf(`<claude_md>
+%s
+</claude_md>`, p.ClaudeMD))
+	}
+
+	if len(sections) == 0 {
+		return ""
+	}
+
 	return fmt.Sprintf(`# Custom Instructions
 
 The following are user-provided instructions that OVERRIDE default behavior:
 
-<claude_md>
 %s
-</claude_md>
 
-IMPORTANT: Follow these instructions exactly as written.`, p.ClaudeMD)
+IMPORTANT: Follow these instructions exactly as written.`, strings.Join(sections, "\n\n"))
 }
 
-// LoadClaudeMD loads CLAUDE.md from various locations
-func (p *PromptBuilder) LoadClaudeMD() {
-	// Priority order:
-	// 1. Project-level CLAUDE.md
-	// 2. User home ~/.claude/CLAUDE.md
-	// 3. Global ~/.claude/CLAUDE.md
+// LoadInstructions loads instruction files (AGENT.md and CLAUDE.md)
+func (p *PromptBuilder) LoadInstructions() {
+	p.loadAgentMD()
+	p.loadClaudeMD()
+}
 
+// loadAgentMD loads our own AGENT.md files
+func (p *PromptBuilder) loadAgentMD() {
+	appDir, _ := config.GetAppDir()
+	locations := []string{}
+
+	// Project level
+	if p.ProjectPath != "" {
+		locations = append(locations, filepath.Join(p.ProjectPath, InstructionFileName))
+		locations = append(locations, filepath.Join(p.ProjectPath, config.AppDirName, InstructionFileName))
+	}
+
+	// Current directory
+	if p.CWD != "" && p.CWD != p.ProjectPath {
+		locations = append(locations, filepath.Join(p.CWD, InstructionFileName))
+	}
+
+	// User home
+	if appDir != "" {
+		locations = append(locations, filepath.Join(appDir, InstructionFileName))
+	}
+
+	// Try each location
+	var contents []string
+	for _, loc := range locations {
+		if data, err := os.ReadFile(loc); err == nil {
+			contents = append(contents, fmt.Sprintf("# From %s\n%s", loc, string(data)))
+		}
+	}
+
+	if len(contents) > 0 {
+		p.AgentMD = strings.Join(contents, "\n\n---\n\n")
+	}
+}
+
+// loadClaudeMD loads CLAUDE.md for compatibility
+func (p *PromptBuilder) loadClaudeMD() {
 	locations := []string{}
 
 	// Project level
@@ -319,6 +377,83 @@ func (p *PromptBuilder) LoadClaudeMD() {
 	if len(contents) > 0 {
 		p.ClaudeMD = strings.Join(contents, "\n\n---\n\n")
 	}
+}
+
+// LoadClaudeMD loads CLAUDE.md from various locations (deprecated, use LoadInstructions)
+func (p *PromptBuilder) LoadClaudeMD() {
+	p.LoadInstructions()
+}
+
+// MigrationInfo contains info about CLAUDE.md files that can be migrated
+type MigrationInfo struct {
+	ClaudeMDPaths []string // Existing CLAUDE.md paths
+	AgentMDPaths  []string // Existing AGENT.md paths
+	NeedsMigration bool    // True if CLAUDE.md exists but no AGENT.md
+}
+
+// CheckMigration checks if CLAUDE.md needs to be migrated to AGENT.md
+func (p *PromptBuilder) CheckMigration() *MigrationInfo {
+	info := &MigrationInfo{}
+	appDir, _ := config.GetAppDir()
+
+	// Check for existing CLAUDE.md files
+	claudeLocations := []string{}
+	if p.ProjectPath != "" {
+		claudeLocations = append(claudeLocations, filepath.Join(p.ProjectPath, "CLAUDE.md"))
+		claudeLocations = append(claudeLocations, filepath.Join(p.ProjectPath, ".claude", "CLAUDE.md"))
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		claudeLocations = append(claudeLocations, filepath.Join(home, ".claude", "CLAUDE.md"))
+	}
+
+	for _, loc := range claudeLocations {
+		if _, err := os.Stat(loc); err == nil {
+			info.ClaudeMDPaths = append(info.ClaudeMDPaths, loc)
+		}
+	}
+
+	// Check for existing AGENT.md files
+	agentLocations := []string{}
+	if p.ProjectPath != "" {
+		agentLocations = append(agentLocations, filepath.Join(p.ProjectPath, InstructionFileName))
+		agentLocations = append(agentLocations, filepath.Join(p.ProjectPath, config.AppDirName, InstructionFileName))
+	}
+	if appDir != "" {
+		agentLocations = append(agentLocations, filepath.Join(appDir, InstructionFileName))
+	}
+
+	for _, loc := range agentLocations {
+		if _, err := os.Stat(loc); err == nil {
+			info.AgentMDPaths = append(info.AgentMDPaths, loc)
+		}
+	}
+
+	// Need migration if we have CLAUDE.md but no AGENT.md
+	info.NeedsMigration = len(info.ClaudeMDPaths) > 0 && len(info.AgentMDPaths) == 0
+
+	return info
+}
+
+// MigrateFromClaudeMD copies CLAUDE.md content to AGENT.md
+func MigrateFromClaudeMD(claudeMDPath, agentMDPath string) error {
+	// Read source
+	data, err := os.ReadFile(claudeMDPath)
+	if err != nil {
+		return fmt.Errorf("failed to read %s: %w", claudeMDPath, err)
+	}
+
+	// Ensure directory exists
+	dir := filepath.Dir(agentMDPath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	// Write destination
+	if err := os.WriteFile(agentMDPath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write %s: %w", agentMDPath, err)
+	}
+
+	return nil
 }
 
 // BuildToolDescriptions returns tool descriptions section

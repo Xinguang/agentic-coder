@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"syscall"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/xinguang/agentic-coder/pkg/auth"
+	"github.com/xinguang/agentic-coder/pkg/config"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
 	"github.com/xinguang/agentic-coder/pkg/provider/claude"
@@ -410,6 +412,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return fmt.Errorf("failed to get working directory: %w", err)
 	}
+
+	// Check if CLAUDE.md needs migration to AGENT.md
+	checkAndPromptMigration(cwd, printer)
 
 	// Detect provider from model
 	providerType := provider.DetectProviderFromModel(model)
@@ -973,9 +978,75 @@ func registerBuiltinTools(registry *tool.Registry) {
 	registry.Register(builtin.NewExitPlanModeTool(&inPlanMode, nil))
 }
 
+// checkAndPromptMigration checks if CLAUDE.md exists but AGENT.md doesn't
+// and prompts the user to migrate their instructions
+func checkAndPromptMigration(cwd string, printer *ui.Printer) {
+	builder := engine.NewPromptBuilder()
+	builder.ProjectPath = cwd
+	builder.CWD = cwd
+
+	migration := builder.CheckMigration()
+	if !migration.NeedsMigration {
+		return
+	}
+
+	// Show migration prompt
+	printer.Warning("Found CLAUDE.md but no %s", engine.InstructionFileName)
+	fmt.Println()
+	fmt.Println("agentic-coder uses its own instruction file (AGENT.md) to support")
+	fmt.Println("multiple AI providers (Claude, Gemini, OpenAI, etc.)")
+	fmt.Println()
+	fmt.Println("Found CLAUDE.md files:")
+	for _, p := range migration.ClaudeMDPaths {
+		fmt.Printf("  • %s\n", p)
+	}
+	fmt.Println()
+
+	// Determine target path for migration
+	appDir, _ := config.GetAppDir()
+	var targetPath string
+	if len(migration.ClaudeMDPaths) > 0 {
+		// If project-level CLAUDE.md exists, create project-level AGENT.md
+		for _, p := range migration.ClaudeMDPaths {
+			if strings.HasPrefix(p, cwd) {
+				targetPath = filepath.Join(cwd, engine.InstructionFileName)
+				break
+			}
+		}
+		// Otherwise use global AGENT.md
+		if targetPath == "" && appDir != "" {
+			targetPath = filepath.Join(appDir, engine.InstructionFileName)
+		}
+	}
+
+	if targetPath == "" {
+		return
+	}
+
+	fmt.Printf("Would you like to copy your CLAUDE.md instructions to %s? [y/N] ", targetPath)
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	if input == "y" || input == "yes" {
+		// Migrate the first found CLAUDE.md
+		if err := engine.MigrateFromClaudeMD(migration.ClaudeMDPaths[0], targetPath); err != nil {
+			printer.Error("Migration failed: %v", err)
+		} else {
+			printer.Success("Migrated to %s", targetPath)
+			fmt.Println()
+			fmt.Println("You can now edit AGENT.md for your custom instructions.")
+			fmt.Println("CLAUDE.md will still be read for compatibility.")
+		}
+	} else {
+		printer.Dim("Skipped. You can create %s manually later.", engine.InstructionFileName)
+	}
+	fmt.Println()
+}
+
 func getSystemPrompt() string {
 	builder := engine.NewPromptBuilder()
-	builder.LoadClaudeMD()
+	builder.LoadInstructions() // Loads both AGENT.md and CLAUDE.md
 	return builder.Build()
 }
 
