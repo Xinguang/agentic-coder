@@ -1,6 +1,7 @@
 # Binaries
 bin/
 build/
+agentic-coder
 *.exe
 *.exe~
 *.dll
