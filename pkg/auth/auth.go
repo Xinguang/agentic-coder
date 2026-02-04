@@ -253,11 +253,16 @@ func (m *Manager) credentialsFile() string {
 func (m *Manager) loadCredentials() {
 	data, err := os.ReadFile(m.credentialsFile())
 	if err != nil {
+		// File not existing is normal on first run, don't log
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "Warning: failed to read credentials file: %v\n", err)
+		}
 		return
 	}
 
 	var creds map[Provider]*Credentials
 	if err := json.Unmarshal(data, &creds); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to parse credentials file: %v\n", err)
 		return
 	}
 
@@ -273,11 +278,19 @@ func (m *Manager) saveCredentials() {
 	m.mu.RUnlock()
 
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to marshal credentials: %v\n", err)
 		return
 	}
 
-	os.MkdirAll(m.configDir, 0700)
-	os.WriteFile(m.credentialsFile(), data, 0600)
+	if err := os.MkdirAll(m.configDir, 0700); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to create config directory: %v\n", err)
+		return
+	}
+
+	if err := os.WriteFile(m.credentialsFile(), data, 0600); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: failed to save credentials file: %v\n", err)
+		return
+	}
 }
 
 // OAuthConfig holds OAuth2 configuration

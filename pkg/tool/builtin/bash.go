@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -133,8 +134,8 @@ func (b *BashTool) Execute(ctx context.Context, input *tool.Input) (*tool.Output
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	// Set environment
-	cmd.Env = os.Environ()
+	// Set environment with filtered sensitive variables
+	cmd.Env = filterSensitiveEnvVars(os.Environ())
 
 	// Run command
 	err = cmd.Run()
@@ -182,6 +183,9 @@ func (b *BashTool) Execute(ctx context.Context, input *tool.Input) (*tool.Output
 		content = "(no output)"
 	}
 
+	// Write audit log
+	logBashExecution(params.Command, exitCode, interrupted)
+
 	return &tool.Output{
 		Content: content,
 		IsError: exitCode != 0 || interrupted,
@@ -192,4 +196,78 @@ func (b *BashTool) Execute(ctx context.Context, input *tool.Input) (*tool.Output
 			Interrupted: interrupted,
 		},
 	}, nil
+}
+
+// filterSensitiveEnvVars removes sensitive environment variables from the environment
+// to prevent API keys and secrets from leaking to executed commands
+func filterSensitiveEnvVars(env []string) []string {
+	sensitivePatterns := []string{
+		"API_KEY",
+		"SECRET",
+		"TOKEN",
+		"PASSWORD",
+		"CREDENTIALS",
+		"ANTHROPIC_API_KEY",
+		"OPENAI_API_KEY",
+		"GOOGLE_API_KEY",
+		"DEEPSEEK_API_KEY",
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, envVar := range env {
+		keep := true
+		upperVar := strings.ToUpper(envVar)
+
+		for _, pattern := range sensitivePatterns {
+			if strings.Contains(upperVar, pattern) {
+				keep = false
+				break
+			}
+		}
+
+		if keep {
+			filtered = append(filtered, envVar)
+		}
+	}
+
+	return filtered
+}
+
+// logBashExecution writes an audit log entry for bash command execution
+func logBashExecution(command string, exitCode int, interrupted bool) {
+	// Get user's home directory for log file
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return // Silently fail if we can't get home dir
+	}
+
+	logDir := filepath.Join(home, ".config", "agentic-coder", "logs")
+	if err := os.MkdirAll(logDir, 0700); err != nil {
+		return // Silently fail if we can't create log dir
+	}
+
+	logFile := filepath.Join(logDir, "bash-audit.log")
+	f, err := os.OpenFile(logFile, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return // Silently fail if we can't open log file
+	}
+	defer f.Close()
+
+	timestamp := time.Now().Format(time.RFC3339)
+	status := "success"
+	if exitCode != 0 {
+		status = fmt.Sprintf("failed(exit=%d)", exitCode)
+	}
+	if interrupted {
+		status = "timeout"
+	}
+
+	// Truncate command if too long for logging
+	logCommand := command
+	if len(logCommand) > 200 {
+		logCommand = logCommand[:200] + "..."
+	}
+
+	logEntry := fmt.Sprintf("[%s] status=%s command=%q\n", timestamp, status, logCommand)
+	f.WriteString(logEntry)
 }

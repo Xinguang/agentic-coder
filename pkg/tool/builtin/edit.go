@@ -81,6 +81,11 @@ func (e *EditTool) Validate(input *tool.Input) error {
 		return fmt.Errorf("file_path is required")
 	}
 
+	// Use secure path validation
+	if err := ValidateSecurePath(params.FilePath); err != nil {
+		return err
+	}
+
 	if params.OldString == "" {
 		return fmt.Errorf("old_string is required")
 	}

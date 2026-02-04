@@ -76,8 +76,9 @@ func (r *ReadTool) Validate(input *tool.Input) error {
 		return fmt.Errorf("file_path is required")
 	}
 
-	if !strings.HasPrefix(params.FilePath, "/") {
-		return fmt.Errorf("file_path must be an absolute path")
+	// Use secure path validation
+	if err := ValidateSecurePath(params.FilePath); err != nil {
+		return err
 	}
 
 	return nil
