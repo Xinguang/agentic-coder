@@ -226,11 +226,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.print("\n")
 	}
 
-	// Update text input when not streaming
-	if !m.isStreaming {
-		m.textinput, cmd = m.textinput.Update(msg)
-		cmds = append(cmds, cmd)
-	}
+	// Always update text input (allow typing while streaming)
+	m.textinput, cmd = m.textinput.Update(msg)
+	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
@@ -260,13 +258,11 @@ func (m Model) View() string {
 			status = "Processing"
 		}
 		b.WriteString(dimStyle.Render(fmt.Sprintf("  %s %s...", m.spinner.View(), status)))
-		b.WriteString("\n")
+		b.WriteString("\n\n")
 	}
 
-	// Input line
-	if !m.isStreaming {
-		b.WriteString(m.textinput.View())
-	}
+	// Input line (always visible)
+	b.WriteString(m.textinput.View())
 
 	return b.String()
 }
