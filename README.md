@@ -183,11 +183,24 @@ Once in the chat interface:
 
 | Command | Description |
 |---------|-------------|
-| `/help` | Show available commands |
-| `/clear` | Clear the screen |
-| `/session` | Show current session info |
+| `/help`, `/h` | Show available commands |
+| `/clear`, `/cls` | Clear the screen |
 | `/model [name]` | Show or change the model |
-| `/exit` | Exit the program |
+| `/session` | Show current session info |
+| `/sessions` | List recent sessions |
+| `/resume [id]` | Resume a previous session |
+| `/new` | Start a new session |
+| `/save` | Save current session |
+| `/work` | Manage work context |
+| `/work new <title>` | Create new work context |
+| `/work list` | List work contexts |
+| `/work show <id>` | Show work context |
+| `/work done <text>` | Mark item as done |
+| `/work todo <text>` | Add pending item |
+| `/work handoff` | Generate handoff summary |
+| `/cost` | Show token usage |
+| `/compact` | Compact conversation history |
+| `/exit`, `/quit`, `/q` | Exit the program |
 
 ### Keyboard Shortcuts
 

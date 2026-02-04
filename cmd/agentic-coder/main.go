@@ -10,11 +10,12 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
+	"github.com/spf13/cobra"
 	"github.com/xinguang/agentic-coder/pkg/auth"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
-	"github.com/xinguang/agentic-coder/pkg/workctx"
 	"github.com/xinguang/agentic-coder/pkg/provider/claude"
 	"github.com/xinguang/agentic-coder/pkg/provider/claudecli"
 	"github.com/xinguang/agentic-coder/pkg/provider/codexcli"
@@ -26,7 +27,8 @@ import (
 	"github.com/xinguang/agentic-coder/pkg/session"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 	"github.com/xinguang/agentic-coder/pkg/tool/builtin"
-	"github.com/spf13/cobra"
+	"github.com/xinguang/agentic-coder/pkg/ui"
+	"github.com/xinguang/agentic-coder/pkg/workctx"
 )
 
 var (
@@ -396,6 +398,9 @@ func workCmd() *cobra.Command {
 }
 
 func runChat(cmd *cobra.Command, args []string) error {
+	// Create UI printer
+	printer := ui.NewPrinter()
+
 	// Get working directory
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -406,7 +411,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 	providerType := provider.DetectProviderFromModel(model)
 
 	// Create provider based on type
-	prov, err := createProvider(providerType, apiKey)
+	prov, err := createProvider(providerType, apiKey, printer)
 	if err != nil {
 		return err
 	}
@@ -435,6 +440,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
+	// Create work context manager
+	workMgr := workctx.NewManager("")
+
 	// Create engine
 	eng := engine.NewEngine(&engine.EngineOptions{
 		Provider:      prov,
@@ -445,61 +453,47 @@ func runChat(cmd *cobra.Command, args []string) error {
 		SystemPrompt:  getSystemPrompt(),
 	})
 
-	// Set callbacks
+	// Set callbacks using ui package
 	eng.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
 			fmt.Print(text)
 		},
 		OnThinking: func(text string) {
 			if verbose {
-				fmt.Printf("\033[90m[thinking] %s\033[0m", text)
+				printer.Thinking(text)
 			}
 		},
 		OnToolUse: func(name string, input map[string]interface{}) {
-			fmt.Printf("\n\033[33m⚡ Using tool: %s\033[0m\n", name)
-			// Show tool input parameters
+			fmt.Println()
+			printer.Tool(name)
+			fmt.Println()
 			for k, v := range input {
-				valStr := fmt.Sprintf("%v", v)
-				if len(valStr) > 100 {
-					valStr = valStr[:100] + "..."
-				}
-				// Replace newlines for cleaner display
-				valStr = strings.ReplaceAll(valStr, "\n", "\\n")
-				fmt.Printf("   \033[90m%s: %s\033[0m\n", k, valStr)
+				printer.ToolParam(k, fmt.Sprintf("%v", v))
 			}
 		},
 		OnToolResult: func(name string, result *tool.Output) {
 			if result.IsError {
-				fmt.Printf("\033[31m✗ Tool error: %s\033[0m\n", result.Content)
+				printer.ToolError(name, result.Content)
 			} else {
-				// Show result summary
 				content := result.Content
 				lines := strings.Split(content, "\n")
 				if len(lines) > 5 {
-					fmt.Printf("\033[32m✓ %s completed (%d lines)\033[0m\n", name, len(lines))
-					// Show first 3 lines as preview
-					for i := 0; i < 3 && i < len(lines); i++ {
-						line := lines[i]
-						if len(line) > 80 {
-							line = line[:80] + "..."
-						}
-						fmt.Printf("   \033[90m%s\033[0m\n", line)
-					}
-					if len(lines) > 3 {
-						fmt.Printf("   \033[90m... (%d more lines)\033[0m\n", len(lines)-3)
-					}
+					printer.ToolSuccess(name, fmt.Sprintf("%d lines", len(lines)))
 				} else if len(content) > 200 {
-					fmt.Printf("\033[32m✓ %s completed\033[0m\n", name)
-					fmt.Printf("   \033[90m%s...\033[0m\n", content[:200])
+					printer.ToolSuccess(name, "")
 				} else if content != "" {
-					fmt.Printf("\033[32m✓ %s: %s\033[0m\n", name, strings.ReplaceAll(content, "\n", " "))
+					summary := strings.ReplaceAll(content, "\n", " ")
+					if len(summary) > 60 {
+						summary = summary[:60] + "..."
+					}
+					printer.ToolSuccess(name, summary)
 				} else {
-					fmt.Printf("\033[32m✓ %s completed\033[0m\n", name)
+					printer.ToolSuccess(name, "")
 				}
 			}
 		},
 		OnError: func(err error) {
-			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+			printer.Error("%v", err)
 		},
 	})
 
@@ -518,27 +512,37 @@ func runChat(cmd *cobra.Command, args []string) error {
 			mu.Lock()
 			if isRunning && currentCancel != nil {
 				// First Ctrl+C: cancel current operation
-				fmt.Println("\n\033[33m⚠ Interrupted. Press Ctrl+C again to exit.\033[0m")
+				printer.Warning("Interrupted. Press Ctrl+C again to exit.")
 				currentCancel()
 				mu.Unlock()
 			} else {
 				// Second Ctrl+C or idle: exit
 				mu.Unlock()
-				fmt.Println("\n\nGoodbye!")
+				fmt.Println()
+				printer.Dim("Goodbye!")
 				os.Exit(0)
 			}
 		}
 	}()
 
-	// Print welcome message
-	fmt.Printf("\033[1magentic-coder v%s\033[0m\n", version)
-	fmt.Printf("Model: %s | CWD: %s\n", sess.Model, cwd)
-	fmt.Println("Type your message, or /help for commands. Ctrl+C to interrupt, twice to exit.")
+	// Print welcome banner
+	printer.WelcomeBanner(version, sess.Model, cwd)
+
+	// Create chat context for handling commands
+	chatCtx := &chatContext{
+		session:    sess,
+		sessMgr:    sessMgr,
+		workMgr:    workMgr,
+		printer:    printer,
+		engine:     eng,
+		provider:   prov,
+		provType:   providerType,
+	}
 
 	// Interactive loop
 	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Print("\033[1m> \033[0m")
+		printer.Prompt()
 
 		input, err := reader.ReadString('\n')
 		if err != nil {
@@ -552,7 +556,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 		// Handle commands
 		if strings.HasPrefix(input, "/") {
-			if handleCommand(input, sess, sessMgr) {
+			if handleCommand(input, chatCtx) {
 				continue
 			}
 		}
@@ -581,14 +585,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 				fmt.Println()
 				continue
 			}
-			fmt.Printf("\033[31mError: %v\033[0m\n", err)
+			printer.Error("%v", err)
 		}
 		fmt.Println()
 
 		// Save session
 		if err := sessMgr.SaveSession(sess); err != nil {
 			if verbose {
-				fmt.Printf("\033[33mWarning: Failed to save session: %v\033[0m\n", err)
+				printer.Warning("Failed to save session: %v", err)
 			}
 		}
 	}
@@ -596,7 +600,18 @@ func runChat(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func handleCommand(cmd string, sess *session.Session, mgr *session.SessionManager) bool {
+// chatContext holds the state for interactive chat
+type chatContext struct {
+	session    *session.Session
+	sessMgr    *session.SessionManager
+	workMgr    *workctx.Manager
+	printer    *ui.Printer
+	engine     *engine.Engine
+	provider   provider.AIProvider
+	provType   provider.ProviderType
+}
+
+func handleCommand(cmd string, ctx *chatContext) bool {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return true
@@ -604,53 +619,250 @@ func handleCommand(cmd string, sess *session.Session, mgr *session.SessionManage
 
 	switch parts[0] {
 	case "/help", "/h":
-		printHelp()
+		ctx.printer.HelpMenu()
 		return true
 
-	case "/clear":
+	case "/clear", "/cls":
 		fmt.Print("\033[H\033[2J")
 		return true
 
 	case "/session":
-		fmt.Printf("Session ID: %s\n", sess.ID)
-		fmt.Printf("Messages: %d\n", len(sess.Messages))
+		// Get timestamps from session messages
+		var createdAt, updatedAt time.Time
+		if len(ctx.session.Messages) > 0 {
+			createdAt = ctx.session.Messages[0].Timestamp
+			updatedAt = ctx.session.Messages[len(ctx.session.Messages)-1].Timestamp
+		} else {
+			createdAt = time.Now()
+			updatedAt = time.Now()
+		}
+		ctx.printer.SessionInfo(
+			ctx.session.ID,
+			ctx.session.Model,
+			len(ctx.session.Messages),
+			createdAt,
+			updatedAt,
+		)
+		return true
+
+	case "/sessions":
+		sessions, err := ctx.sessMgr.ListSessions()
+		if err != nil {
+			ctx.printer.Error("Failed to list sessions: %v", err)
+			return true
+		}
+		items := make([]ui.SessionListItem, 0, len(sessions))
+		for _, s := range sessions {
+			items = append(items, ui.SessionListItem{
+				ID:        s.ID,
+				Preview:   fmt.Sprintf("%s (%d messages)", s.Model, s.MessageCount),
+				UpdatedAt: s.LastUpdated,
+				IsCurrent: s.ID == ctx.session.ID,
+			})
+		}
+		ctx.printer.SessionList(items)
+		return true
+
+	case "/resume":
+		if len(parts) < 2 {
+			ctx.printer.Warning("Usage: /resume <session-id>")
+			return true
+		}
+		sessionID := parts[1]
+		sess, err := ctx.sessMgr.GetSession(sessionID)
+		if err != nil {
+			ctx.printer.Error("Failed to load session: %v", err)
+			return true
+		}
+		ctx.session = sess
+		ctx.printer.Success("Resumed session: %s", sessionID)
+		var createdAt, updatedAt time.Time
+		if len(sess.Messages) > 0 {
+			createdAt = sess.Messages[0].Timestamp
+			updatedAt = sess.Messages[len(sess.Messages)-1].Timestamp
+		} else {
+			createdAt = time.Now()
+			updatedAt = time.Now()
+		}
+		ctx.printer.SessionInfo(sess.ID, sess.Model, len(sess.Messages), createdAt, updatedAt)
+		return true
+
+	case "/new":
+		cwd, _ := os.Getwd()
+		sess, err := ctx.sessMgr.NewSession(&session.SessionOptions{
+			ProjectPath: cwd,
+			CWD:         cwd,
+			Model:       ctx.session.Model,
+			Version:     version,
+			MaxTokens:   200000,
+		})
+		if err != nil {
+			ctx.printer.Error("Failed to create session: %v", err)
+			return true
+		}
+		ctx.session = sess
+		ctx.printer.Success("Started new session: %s", sess.ID)
+		return true
+
+	case "/save":
+		if err := ctx.sessMgr.SaveSession(ctx.session); err != nil {
+			ctx.printer.Error("Failed to save session: %v", err)
+		} else {
+			ctx.printer.Success("Session saved: %s", ctx.session.ID)
+		}
 		return true
 
 	case "/model":
 		if len(parts) > 1 {
-			sess.Model = provider.ResolveModel(parts[1])
-			fmt.Printf("Model changed to: %s\n", sess.Model)
+			ctx.session.Model = provider.ResolveModel(parts[1])
+			ctx.printer.Success("Model changed to: %s", ctx.session.Model)
 		} else {
-			fmt.Printf("Current model: %s\n", sess.Model)
+			ctx.printer.Info("Current model: %s", ctx.session.Model)
 		}
 		return true
 
+	case "/work":
+		handleWorkCommand(parts[1:], ctx)
+		return true
+
+	case "/cost":
+		// Estimate tokens from session
+		tokenCount := ctx.session.EstimateTokens()
+		ctx.printer.CostSummary(
+			int64(tokenCount),
+			0, // Output tokens not tracked separately
+			0, // TODO: calculate cost based on model
+		)
+		return true
+
+	case "/compact":
+		// TODO: implement conversation compaction
+		ctx.printer.Info("Conversation compaction not yet implemented")
+		return true
+
 	case "/exit", "/quit", "/q":
-		fmt.Println("Goodbye!")
+		ctx.printer.Dim("Goodbye!")
 		os.Exit(0)
 
 	default:
-		fmt.Printf("Unknown command: %s\n", parts[0])
+		ctx.printer.Warning("Unknown command: %s. Type /help for available commands.", parts[0])
 		return true
 	}
 
 	return false
 }
 
-func printHelp() {
-	help := `
-Commands:
-  /help, /h      Show this help
-  /clear         Clear the screen
-  /session       Show current session info
-  /model [name]  Show or change the model
-  /exit, /quit   Exit the program
+func handleWorkCommand(args []string, ctx *chatContext) {
+	if len(args) == 0 {
+		// Show current work context or list
+		if ctx.workMgr.Current() != nil {
+			current := ctx.workMgr.Current()
+			ctx.printer.Info("Current work: %s - %s", current.ID, current.Title)
+			ctx.printer.Dim(current.Summary())
+		} else {
+			contexts, _ := ctx.workMgr.List()
+			items := make([]ui.WorkContextItem, 0, len(contexts))
+			for _, c := range contexts {
+				items = append(items, ui.WorkContextItem{
+					ID:      c.ID[:8],
+					Title:   c.Title,
+					Done:    len(c.Progress),
+					Pending: len(c.Pending),
+				})
+			}
+			ctx.printer.WorkContextList(items)
+		}
+		return
+	}
 
-Keyboard shortcuts:
-  Ctrl+C         Interrupt current operation
-  Ctrl+D         Exit the program
-`
-	fmt.Println(help)
+	switch args[0] {
+	case "new":
+		if len(args) < 2 {
+			ctx.printer.Warning("Usage: /work new <title>")
+			return
+		}
+		title := strings.Join(args[1:], " ")
+		wctx := ctx.workMgr.New(title, "")
+		if err := ctx.workMgr.Save(wctx); err != nil {
+			ctx.printer.Error("Failed to create work context: %v", err)
+			return
+		}
+		ctx.printer.Success("Created work context: %s", wctx.ID)
+
+	case "list":
+		contexts, _ := ctx.workMgr.List()
+		items := make([]ui.WorkContextItem, 0, len(contexts))
+		for _, c := range contexts {
+			items = append(items, ui.WorkContextItem{
+				ID:      c.ID[:8],
+				Title:   c.Title,
+				Done:    len(c.Progress),
+				Pending: len(c.Pending),
+			})
+		}
+		ctx.printer.WorkContextList(items)
+
+	case "show":
+		if len(args) < 2 {
+			ctx.printer.Warning("Usage: /work show <id>")
+			return
+		}
+		wctx, err := ctx.workMgr.Load(args[1])
+		if err != nil {
+			ctx.printer.Error("Work context not found: %s", args[1])
+			return
+		}
+		fmt.Println(wctx.GenerateHandoff())
+
+	case "done":
+		if ctx.workMgr.Current() == nil {
+			ctx.printer.Warning("No active work context. Use '/work new <title>' first.")
+			return
+		}
+		if len(args) < 2 {
+			ctx.printer.Warning("Usage: /work done <description>")
+			return
+		}
+		current := ctx.workMgr.Current()
+		current.AddProgress(strings.Join(args[1:], " "))
+		ctx.workMgr.Save(current)
+		ctx.printer.Success("Marked as done: %s", strings.Join(args[1:], " "))
+
+	case "todo":
+		if ctx.workMgr.Current() == nil {
+			ctx.printer.Warning("No active work context. Use '/work new <title>' first.")
+			return
+		}
+		if len(args) < 2 {
+			ctx.printer.Warning("Usage: /work todo <description>")
+			return
+		}
+		current := ctx.workMgr.Current()
+		current.AddPending(strings.Join(args[1:], " "))
+		ctx.workMgr.Save(current)
+		ctx.printer.Success("Added todo: %s", strings.Join(args[1:], " "))
+
+	case "handoff":
+		var wctx *workctx.WorkContext
+		if len(args) >= 2 {
+			var err error
+			wctx, err = ctx.workMgr.Load(args[1])
+			if err != nil {
+				ctx.printer.Error("Work context not found: %s", args[1])
+				return
+			}
+		} else if ctx.workMgr.Current() != nil {
+			wctx = ctx.workMgr.Current()
+		} else {
+			ctx.printer.Warning("Usage: /work handoff [id]")
+			return
+		}
+		fmt.Println(wctx.GenerateHandoff())
+
+	default:
+		ctx.printer.Warning("Unknown work command: %s", args[0])
+		ctx.printer.Dim("Available: new, list, show, done, todo, handoff")
+	}
 }
 
 func registerBuiltinTools(registry *tool.Registry) {
@@ -686,7 +898,7 @@ func getSystemPrompt() string {
 }
 
 // createProvider creates a provider based on type
-func createProvider(providerType provider.ProviderType, customKey string) (provider.AIProvider, error) {
+func createProvider(providerType provider.ProviderType, customKey string, printer *ui.Printer) (provider.AIProvider, error) {
 	// Try to get credentials from auth manager first
 	authMgr := auth.NewManager("")
 
@@ -694,7 +906,7 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 	case provider.ProviderTypeClaude:
 		// Try auth manager first (API key only)
 		if creds, err := authMgr.GetCredentials(auth.ProviderClaude); err == nil && creds.APIKey != "" {
-			fmt.Println("🔐 Using saved API key for Claude")
+			printer.Dim("%s Using saved API key for Claude", ui.IconKey)
 			return claude.New(creds.APIKey, claude.WithBeta("interleaved-thinking-2025-05-14")), nil
 		}
 
@@ -710,13 +922,13 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 
 	case provider.ProviderTypeClaudeCLI:
 		// Use local Claude Code CLI
-		fmt.Println("🔧 Using local Claude Code CLI")
+		printer.Dim("%s Using local Claude Code CLI", ui.IconGear)
 		return claudecli.New(claudecli.WithModel("sonnet")), nil
 
 	case provider.ProviderTypeOpenAI:
 		// Try auth manager first (API key only)
 		if creds, err := authMgr.GetCredentials(auth.ProviderOpenAI); err == nil && creds.APIKey != "" {
-			fmt.Println("🔐 Using saved API key for OpenAI")
+			printer.Dim("%s Using saved API key for OpenAI", ui.IconKey)
 			return openai.New(creds.APIKey), nil
 		}
 
@@ -731,13 +943,13 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 
 	case provider.ProviderTypeCodexCLI:
 		// Use local Codex CLI
-		fmt.Println("🔧 Using local Codex CLI")
+		printer.Dim("%s Using local Codex CLI", ui.IconGear)
 		return codexcli.New(codexcli.WithModel("o3-mini")), nil
 
 	case provider.ProviderTypeGemini:
 		// Try auth manager first (API key only)
 		if creds, err := authMgr.GetCredentials(auth.ProviderGemini); err == nil && creds.APIKey != "" {
-			fmt.Println("🔐 Using saved API key for Gemini")
+			printer.Dim("%s Using saved API key for Gemini", ui.IconKey)
 			return gemini.New(creds.APIKey), nil
 		}
 
@@ -752,7 +964,7 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 
 	case provider.ProviderTypeGeminiCLI:
 		// Use local Gemini CLI
-		fmt.Println("🔧 Using local Gemini CLI")
+		printer.Dim("%s Using local Gemini CLI", ui.IconGear)
 		return geminicli.New(geminicli.WithModel("gemini-2.5-pro")), nil
 
 	case provider.ProviderTypeDeepSeek:
@@ -763,6 +975,7 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 		if key == "" {
 			return nil, fmt.Errorf("DEEPSEEK_API_KEY not set")
 		}
+		printer.Dim("%s Using DeepSeek API", ui.IconKey)
 		return deepseek.New(key), nil
 
 	case provider.ProviderTypeOllama:
@@ -771,7 +984,7 @@ func createProvider(providerType provider.ProviderType, customKey string) (provi
 		if baseURL == "" {
 			baseURL = "http://localhost:11434"
 		}
-		fmt.Printf("🦙 Using Ollama at %s\n", baseURL)
+		printer.Dim("%s Using Ollama at %s", ui.IconGear, baseURL)
 		return ollama.New(ollama.WithBaseURL(baseURL)), nil
 
 	default:

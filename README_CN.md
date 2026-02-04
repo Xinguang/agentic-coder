@@ -184,11 +184,24 @@ export OPENAI_API_KEY="your-api-key"
 
 | 命令 | 描述 |
 |------|------|
-| `/help` | 显示可用命令 |
-| `/clear` | 清屏 |
-| `/session` | 显示当前会话信息 |
+| `/help`, `/h` | 显示可用命令 |
+| `/clear`, `/cls` | 清屏 |
 | `/model [name]` | 显示或切换模型 |
-| `/exit` | 退出程序 |
+| `/session` | 显示当前会话信息 |
+| `/sessions` | 列出最近会话 |
+| `/resume [id]` | 恢复之前的会话 |
+| `/new` | 开始新会话 |
+| `/save` | 保存当前会话 |
+| `/work` | 管理工作上下文 |
+| `/work new <标题>` | 创建新工作上下文 |
+| `/work list` | 列出工作上下文 |
+| `/work show <id>` | 显示工作上下文 |
+| `/work done <文本>` | 标记项目为完成 |
+| `/work todo <文本>` | 添加待办项目 |
+| `/work handoff` | 生成交接摘要 |
+| `/cost` | 显示 token 使用情况 |
+| `/compact` | 压缩对话历史 |
+| `/exit`, `/quit`, `/q` | 退出程序 |
 
 ### 快捷键
 
