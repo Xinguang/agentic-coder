@@ -7,78 +7,60 @@ import (
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Styles
+// Styles - Clean minimal design like Claude Code
 var (
-	titleStyle = lipgloss.NewStyle().
-			Bold(true).
-			Foreground(lipgloss.Color("86")).
-			Background(lipgloss.Color("236")).
-			Padding(0, 1)
+	// Prompt styles
+	promptStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("6")).
+			Bold(true)
 
-	statusStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
-			Padding(0, 1)
+	// Status/dim text
+	dimStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("242"))
 
-	inputBorderStyle = lipgloss.NewStyle().
-				Border(lipgloss.RoundedBorder()).
-				BorderForeground(lipgloss.Color("86")).
-				Padding(0, 1)
-
+	// Tool styles
 	toolStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214"))
 
+	// Error style
 	errorStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("196"))
 
+	// Success style
 	successStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("46"))
 
+	// Thinking style
 	thinkingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241")).
+			Foreground(lipgloss.Color("242")).
 			Italic(true)
 
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("241"))
+	// User input echo
+	userStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("255")).
+			Bold(true)
 )
 
 // Message types for tea.Cmd
 type (
-	// StreamTextMsg is sent when streaming text arrives
-	StreamTextMsg struct {
-		Text string
-	}
-
-	// StreamThinkingMsg is sent when thinking text arrives
-	StreamThinkingMsg struct {
-		Text string
-	}
-
-	// ToolUseMsg is sent when a tool is being used
-	ToolUseMsg struct {
+	StreamTextMsg     struct{ Text string }
+	StreamThinkingMsg struct{ Text string }
+	ToolUseMsg        struct {
 		Name   string
 		Params map[string]interface{}
 	}
-
-	// ToolResultMsg is sent when a tool completes
 	ToolResultMsg struct {
 		Name    string
 		Success bool
 		Summary string
 	}
-
-	// StreamDoneMsg is sent when streaming completes
-	StreamDoneMsg struct {
-		Error error
-	}
-
-	// InterruptMsg is sent when user wants to interrupt
-	InterruptMsg struct{}
+	StreamDoneMsg struct{ Error error }
+	InterruptMsg  struct{}
 )
 
 // SubmitCallback is called when user submits input
@@ -86,86 +68,59 @@ type SubmitCallback func(input string) tea.Cmd
 
 // Model represents the TUI state
 type Model struct {
-	// UI components
-	viewport viewport.Model
-	textarea textarea.Model
-	spinner  spinner.Model
-
-	// State
-	content       *strings.Builder // Must be pointer to avoid copy issues
-	ready         bool
-	isStreaming   bool
-	isThinking    bool
-	thinkingText  string
-	interrupted   bool
-	model         string
-	cwd           string
-	messageCount  int
-	lastActivity  time.Time
-
-	// Dimensions
-	width  int
-	height int
-
-	// Callbacks
-	onSubmit SubmitCallback
-
-	// Error state
-	err error
+	textinput    textinput.Model
+	spinner      spinner.Model
+	output       *strings.Builder
+	isStreaming  bool
+	isThinking   bool
+	thinkingText string
+	interrupted  bool
+	model        string
+	cwd          string
+	version      string
+	width        int
+	height       int
+	onSubmit     SubmitCallback
+	lastActivity time.Time
+	showWelcome  bool
 }
 
 // Config holds TUI configuration
 type Config struct {
-	Model        string
-	CWD          string
-	Version      string
-	OnSubmit     SubmitCallback
+	Model    string
+	CWD      string
+	Version  string
+	OnSubmit SubmitCallback
 }
 
 // New creates a new TUI model
 func New(cfg Config) Model {
-	ta := textarea.New()
-	ta.Placeholder = "Type your message... (Enter to send, Ctrl+C to interrupt)"
-	ta.Focus()
-	ta.Prompt = ""
-	ta.CharLimit = 0
-	ta.SetWidth(80)
-	ta.SetHeight(3)
-	ta.ShowLineNumbers = false
-	ta.KeyMap.InsertNewline.SetEnabled(false) // Enter submits
+	ti := textinput.New()
+	ti.Placeholder = ""
+	ti.Focus()
+	ti.Prompt = promptStyle.Render("> ")
+	ti.CharLimit = 0
 
-	// Custom styling
-	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
-	ta.FocusedStyle.Base = lipgloss.NewStyle()
-
-	// Create spinner
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
 
-	m := Model{
-		textarea:     ta,
+	return Model{
+		textinput:    ti,
 		spinner:      s,
-		content:      &strings.Builder{},
+		output:       &strings.Builder{},
 		model:        cfg.Model,
 		cwd:          cfg.CWD,
+		version:      cfg.Version,
 		onSubmit:     cfg.OnSubmit,
-		messageCount: 0,
 		lastActivity: time.Now(),
+		showWelcome:  true,
 	}
-
-	// Add welcome message
-	m.appendOutput(fmt.Sprintf("%s Agentic Coder %s\n", titleStyle.Render(""), cfg.Version))
-	m.appendOutput(fmt.Sprintf("%s Model: %s | CWD: %s\n", dimStyle.Render(""), cfg.Model, shortenPath(cfg.CWD, 50)))
-	m.appendOutput(dimStyle.Render("Type your message below. Press Enter to send, Ctrl+C to interrupt.\n"))
-	m.appendOutput(strings.Repeat("─", 60) + "\n")
-
-	return m
 }
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, m.spinner.Tick)
+	return tea.Batch(textinput.Blink, m.spinner.Tick)
 }
 
 // Update handles messages
@@ -179,20 +134,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC:
 			if m.isStreaming {
 				m.interrupted = true
-				m.appendOutput(errorStyle.Render("\n⚠ Interrupted by user\n"))
+				m.print(errorStyle.Render("\n⚠ Interrupted\n"))
 				return m, func() tea.Msg { return InterruptMsg{} }
 			}
 			return m, tea.Quit
 
 		case tea.KeyEnter:
 			if !m.isStreaming {
-				input := strings.TrimSpace(m.textarea.Value())
+				input := strings.TrimSpace(m.textinput.Value())
 				if input != "" {
-					m.textarea.Reset()
-					m.messageCount++
-					m.appendOutput(fmt.Sprintf("\n%s %s\n", lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("86")).Render(">"), input))
+					m.textinput.Reset()
 
-					// Check for commands
+					// Echo user input
+					m.print(fmt.Sprintf("\n%s %s\n\n", promptStyle.Render(">"), userStyle.Render(input)))
+
+					// Handle commands
 					if strings.HasPrefix(input, "/") {
 						return m, m.handleCommand(input)
 					}
@@ -202,6 +158,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.thinkingText = "Thinking"
 					m.interrupted = false
 					m.lastActivity = time.Now()
+
 					if m.onSubmit != nil {
 						return m, tea.Batch(m.onSubmit(input), m.spinner.Tick)
 					}
@@ -216,22 +173,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-
-		headerHeight := 1
-		inputHeight := 5 // textarea + border
-		viewportHeight := m.height - headerHeight - inputHeight - 2
-
-		if !m.ready {
-			m.viewport = viewport.New(m.width, viewportHeight)
-			m.viewport.YPosition = headerHeight
-			m.viewport.SetContent(m.content.String())
-			m.ready = true
-		} else {
-			m.viewport.Width = m.width
-			m.viewport.Height = viewportHeight
-		}
-
-		m.textarea.SetWidth(m.width - 4)
+		m.textinput.Width = msg.Width - 4
 
 	case spinner.TickMsg:
 		if m.isStreaming {
@@ -242,112 +184,97 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case StreamTextMsg:
 		m.isThinking = false
 		m.lastActivity = time.Now()
-		m.appendOutput(msg.Text)
-		m.viewport.GotoBottom()
+		m.print(msg.Text)
 
 	case StreamThinkingMsg:
-		m.thinkingText = "Thinking"
 		m.lastActivity = time.Now()
-		m.appendOutput(thinkingStyle.Render(msg.Text))
-		m.viewport.GotoBottom()
 
 	case ToolUseMsg:
 		m.isThinking = false
-		m.thinkingText = fmt.Sprintf("Running %s", msg.Name)
+		m.thinkingText = msg.Name
 		m.lastActivity = time.Now()
-		m.appendOutput(fmt.Sprintf("\n%s %s\n", toolStyle.Render("⚡"), msg.Name))
+		m.print(fmt.Sprintf("\n%s %s\n", toolStyle.Render("⚡"), msg.Name))
 		for k, v := range msg.Params {
 			valStr := fmt.Sprintf("%v", v)
 			if len(valStr) > 80 {
 				valStr = valStr[:80] + "..."
 			}
 			valStr = strings.ReplaceAll(valStr, "\n", "\\n")
-			m.appendOutput(dimStyle.Render(fmt.Sprintf("   %s: %s\n", k, valStr)))
+			m.print(dimStyle.Render(fmt.Sprintf("  %s: %s\n", k, valStr)))
 		}
-		m.viewport.GotoBottom()
 
 	case ToolResultMsg:
 		m.thinkingText = "Thinking"
 		m.lastActivity = time.Now()
 		if msg.Success {
 			if msg.Summary != "" {
-				m.appendOutput(successStyle.Render(fmt.Sprintf("✓ %s: %s\n", msg.Name, msg.Summary)))
+				m.print(successStyle.Render(fmt.Sprintf("✓ %s: %s\n", msg.Name, msg.Summary)))
 			} else {
-				m.appendOutput(successStyle.Render(fmt.Sprintf("✓ %s completed\n", msg.Name)))
+				m.print(successStyle.Render(fmt.Sprintf("✓ %s\n", msg.Name)))
 			}
 		} else {
-			m.appendOutput(errorStyle.Render(fmt.Sprintf("✗ %s: %s\n", msg.Name, msg.Summary)))
+			m.print(errorStyle.Render(fmt.Sprintf("✗ %s: %s\n", msg.Name, msg.Summary)))
 		}
-		m.viewport.GotoBottom()
 
 	case StreamDoneMsg:
 		m.isStreaming = false
 		m.isThinking = false
 		m.thinkingText = ""
 		if msg.Error != nil && !m.interrupted {
-			m.appendOutput(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
+			m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
 		}
-		m.appendOutput("\n")
-		m.viewport.GotoBottom()
+		m.print("\n")
 	}
 
-	// Update textarea
+	// Update text input when not streaming
 	if !m.isStreaming {
-		m.textarea, cmd = m.textarea.Update(msg)
+		m.textinput, cmd = m.textinput.Update(msg)
 		cmds = append(cmds, cmd)
 	}
-
-	// Update viewport
-	m.viewport, cmd = m.viewport.Update(msg)
-	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
 // View renders the UI
 func (m Model) View() string {
-	if !m.ready {
-		return "Initializing..."
+	var b strings.Builder
+
+	// Welcome message (only shown once at start)
+	if m.showWelcome {
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Agentic Coder v%s", m.version)))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s | %s", m.model, shortenPath(m.cwd, 50))))
+		b.WriteString("\n")
+		b.WriteString(dimStyle.Render("  Type /help for commands, Ctrl+C to interrupt"))
+		b.WriteString("\n\n")
 	}
 
-	// Status bar
-	status := statusStyle.Render(fmt.Sprintf(" %s │ %d messages │ %s ",
-		m.model, m.messageCount, shortenPath(m.cwd, 30)))
+	// Output content
+	b.WriteString(m.output.String())
 
-	streamingIndicator := ""
+	// Status line when streaming
 	if m.isStreaming {
-		thinkText := m.thinkingText
-		if thinkText == "" {
-			thinkText = "Processing"
+		status := m.thinkingText
+		if status == "" {
+			status = "Processing"
 		}
-		streamingIndicator = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214")).
-			Render(fmt.Sprintf(" %s %s...", m.spinner.View(), thinkText))
+		b.WriteString(dimStyle.Render(fmt.Sprintf("  %s %s...", m.spinner.View(), status)))
+		b.WriteString("\n")
 	}
 
-	header := lipgloss.JoinHorizontal(lipgloss.Left, status, streamingIndicator)
+	// Input line
+	if !m.isStreaming {
+		b.WriteString(m.textinput.View())
+	}
 
-	// Main content area
-	content := m.viewport.View()
-
-	// Input area
-	inputBox := inputBorderStyle.Render(m.textarea.View())
-
-	// Combine all parts
-	return lipgloss.JoinVertical(
-		lipgloss.Left,
-		header,
-		content,
-		inputBox,
-	)
+	return b.String()
 }
 
-// appendOutput adds text to the output
-func (m *Model) appendOutput(text string) {
-	m.content.WriteString(text)
-	if m.ready {
-		m.viewport.SetContent(m.content.String())
-	}
+// print adds text to output
+func (m *Model) print(text string) {
+	m.output.WriteString(text)
+	m.showWelcome = false // Hide welcome after first output
 }
 
 // handleCommand processes slash commands
@@ -359,58 +286,41 @@ func (m *Model) handleCommand(input string) tea.Cmd {
 
 	switch parts[0] {
 	case "/help", "/h":
-		m.appendOutput(m.helpText())
+		m.print(m.helpText())
 	case "/clear", "/cls":
-		m.content.Reset()
-		m.viewport.SetContent("")
+		m.output.Reset()
+		m.showWelcome = true
 	case "/exit", "/quit", "/q":
 		return tea.Quit
 	case "/model":
 		if len(parts) > 1 {
 			m.model = parts[1]
-			m.appendOutput(successStyle.Render(fmt.Sprintf("✓ Model changed to: %s\n", m.model)))
+			m.print(successStyle.Render(fmt.Sprintf("✓ Model: %s\n", m.model)))
 		} else {
-			m.appendOutput(fmt.Sprintf("Current model: %s\n", m.model))
+			m.print(fmt.Sprintf("Model: %s\n", m.model))
 		}
 	default:
-		m.appendOutput(errorStyle.Render(fmt.Sprintf("Unknown command: %s\n", parts[0])))
+		m.print(errorStyle.Render(fmt.Sprintf("Unknown command: %s\n", parts[0])))
 	}
-
-	m.viewport.GotoBottom()
 	return nil
 }
 
 func (m *Model) helpText() string {
-	return `
-Commands:
-  /help, /h      Show this help
-  /clear, /cls   Clear the screen
-  /model [name]  Show or change the model
-  /exit, /quit   Exit the program
+	return dimStyle.Render(`
+  Commands:
+    /help      Show this help
+    /clear     Clear screen
+    /model     Show/change model
+    /exit      Exit
 
-Keyboard:
-  Enter          Send message
-  Ctrl+C         Interrupt current operation / Exit
-  Ctrl+D         Exit
-`
+  Shortcuts:
+    Enter      Send message
+    Ctrl+C     Interrupt / Exit
+    Ctrl+D     Exit
+`) + "\n"
 }
 
-// IsStreaming returns whether currently streaming
-func (m *Model) IsStreaming() bool {
-	return m.isStreaming
-}
-
-// SetStreaming sets streaming state
-func (m *Model) SetStreaming(streaming bool) {
-	m.isStreaming = streaming
-}
-
-// GetContent returns current output content
-func (m *Model) GetContent() string {
-	return m.content.String()
-}
-
-// shortenPath shortens a path for display
+// Helper functions
 func shortenPath(path string, maxLen int) string {
 	if len(path) <= maxLen {
 		return path
@@ -418,37 +328,23 @@ func shortenPath(path string, maxLen int) string {
 	return "..." + path[len(path)-maxLen+3:]
 }
 
-// SendStreamText creates a command to send streaming text
+// Message constructors for external use
 func SendStreamText(text string) tea.Cmd {
-	return func() tea.Msg {
-		return StreamTextMsg{Text: text}
-	}
+	return func() tea.Msg { return StreamTextMsg{Text: text} }
 }
 
-// SendThinking creates a command to send thinking text
 func SendThinking(text string) tea.Cmd {
-	return func() tea.Msg {
-		return StreamThinkingMsg{Text: text}
-	}
+	return func() tea.Msg { return StreamThinkingMsg{Text: text} }
 }
 
-// SendToolUse creates a command to show tool usage
 func SendToolUse(name string, params map[string]interface{}) tea.Cmd {
-	return func() tea.Msg {
-		return ToolUseMsg{Name: name, Params: params}
-	}
+	return func() tea.Msg { return ToolUseMsg{Name: name, Params: params} }
 }
 
-// SendToolResult creates a command to show tool result
 func SendToolResult(name string, success bool, summary string) tea.Cmd {
-	return func() tea.Msg {
-		return ToolResultMsg{Name: name, Success: success, Summary: summary}
-	}
+	return func() tea.Msg { return ToolResultMsg{Name: name, Success: success, Summary: summary} }
 }
 
-// SendStreamDone creates a command to signal stream completion
 func SendStreamDone(err error) tea.Cmd {
-	return func() tea.Msg {
-		return StreamDoneMsg{Error: err}
-	}
+	return func() tea.Msg { return StreamDoneMsg{Error: err} }
 }
