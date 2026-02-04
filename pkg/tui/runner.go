@@ -46,8 +46,7 @@ func NewRunner(eng *engine.Engine, cfg Config) *Runner {
 func (r *Runner) Run() error {
 	r.program = tea.NewProgram(
 		*r.model,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
+		// Note: Not using WithAltScreen() or mouse capture to allow text selection/copy
 	)
 
 	// Start message forwarder
