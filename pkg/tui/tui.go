@@ -140,28 +140,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 
 		case tea.KeyEnter:
-			if !m.isStreaming {
-				input := strings.TrimSpace(m.textinput.Value())
-				if input != "" {
-					m.textinput.Reset()
+			input := strings.TrimSpace(m.textinput.Value())
+			if input != "" {
+				// If streaming, interrupt first
+				if m.isStreaming {
+					m.interrupted = true
+					m.print(errorStyle.Render("\n⚠ Interrupted\n\n"))
+				}
 
-					// Echo user input (the prompt was already shown, just echo the text)
-					m.print(userStyle.Render(input) + "\n\n")
+				m.textinput.Reset()
 
-					// Handle commands
-					if strings.HasPrefix(input, "/") {
-						return m, m.handleCommand(input)
-					}
+				// Echo user input
+				m.print(userStyle.Render(input) + "\n\n")
 
-					m.isStreaming = true
-					m.isThinking = true
-					m.thinkingText = "Thinking"
-					m.interrupted = false
-					m.lastActivity = time.Now()
+				// Handle commands
+				if strings.HasPrefix(input, "/") {
+					m.isStreaming = false
+					m.isThinking = false
+					return m, m.handleCommand(input)
+				}
 
-					if m.onSubmit != nil {
-						return m, tea.Batch(m.onSubmit(input), m.spinner.Tick)
-					}
+				m.isStreaming = true
+				m.isThinking = true
+				m.thinkingText = "Thinking"
+				m.interrupted = false
+				m.lastActivity = time.Now()
+
+				if m.onSubmit != nil {
+					return m, tea.Batch(m.onSubmit(input), m.spinner.Tick)
 				}
 			}
 			return m, nil
