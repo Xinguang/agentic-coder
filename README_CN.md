@@ -119,6 +119,43 @@ export OPENAI_API_KEY="your-api-key"
 ./bin/agentic-coder auth logout claude
 ```
 
+### 工作上下文管理
+
+当在 AI 提供商之间切换时（例如，当一个提供商的 token 用完时），你需要保持任务的连续性。工作上下文帮助你跟踪进度并生成交接摘要。
+
+```bash
+# 创建新的工作上下文
+./bin/agentic-coder work new "实现用户认证" --goal "添加 OAuth2 登录"
+
+# 更新进度
+./bin/agentic-coder work update abc123 --done "创建了用户模型"
+./bin/agentic-coder work update abc123 --pending "添加登录接口"
+./bin/agentic-coder work update abc123 --file "pkg/auth/oauth.go"
+./bin/agentic-coder work update abc123 --note "使用 JWT 作为令牌"
+
+# 列出所有工作上下文
+./bin/agentic-coder work list
+
+# 显示工作上下文详情
+./bin/agentic-coder work show abc123
+
+# 生成交接摘要（用于切换 provider）
+./bin/agentic-coder work handoff abc123
+./bin/agentic-coder work handoff abc123 --lang cn  # 中文版本
+./bin/agentic-coder work handoff abc123 -o handoff.md  # 保存到文件
+
+# 删除工作上下文
+./bin/agentic-coder work delete abc123
+```
+
+交接摘要包含：
+- 目标和背景
+- 已完成的任务
+- 待完成的任务
+- 涉及的关键文件
+- 重要说明
+- 各 provider 的 token 使用情况
+
 ### 命令行选项
 
 ```
@@ -130,6 +167,8 @@ export OPENAI_API_KEY="your-api-key"
   auth        管理认证
   config      管理配置
   help        查看帮助
+  version     打印版本信息
+  work        管理工作上下文（任务连续性）
   version     打印版本信息
 
 选项:

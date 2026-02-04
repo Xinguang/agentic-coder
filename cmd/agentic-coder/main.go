@@ -14,6 +14,7 @@ import (
 	"github.com/xinguang/agentic-coder/pkg/auth"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
+	"github.com/xinguang/agentic-coder/pkg/workctx"
 	"github.com/xinguang/agentic-coder/pkg/provider/claude"
 	"github.com/xinguang/agentic-coder/pkg/provider/claudecli"
 	"github.com/xinguang/agentic-coder/pkg/provider/codexcli"
@@ -53,6 +54,7 @@ write, edit, and understand code using natural language.`,
 	rootCmd.AddCommand(versionCmd())
 	rootCmd.AddCommand(configCmd())
 	rootCmd.AddCommand(authCmd())
+	rootCmd.AddCommand(workCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -191,6 +193,204 @@ func authCmd() *cobra.Command {
 	cmd.AddCommand(loginCmd)
 	cmd.AddCommand(logoutCmd)
 	cmd.AddCommand(statusCmd)
+
+	return cmd
+}
+
+func workCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "work",
+		Short: "Manage work context for task continuity",
+	}
+
+	// New work context
+	newCmd := &cobra.Command{
+		Use:   "new <title>",
+		Short: "Create a new work context",
+		Args:  cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			title := strings.Join(args, " ")
+			goal, _ := cmd.Flags().GetString("goal")
+
+			mgr := workctx.NewManager("")
+			ctx := mgr.New(title, goal)
+
+			if err := mgr.Save(ctx); err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Created work context: %s\n", ctx.ID)
+			fmt.Printf("   Title: %s\n", ctx.Title)
+			if ctx.Goal != "" {
+				fmt.Printf("   Goal: %s\n", ctx.Goal)
+			}
+			fmt.Println("\nUse 'agentic-coder work update' to add progress, pending items, and notes.")
+			return nil
+		},
+	}
+	newCmd.Flags().StringP("goal", "g", "", "Goal/objective for this work")
+
+	// List work contexts
+	listCmd := &cobra.Command{
+		Use:   "list",
+		Short: "List all saved work contexts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := workctx.NewManager("")
+			contexts, err := mgr.List()
+			if err != nil {
+				return err
+			}
+
+			if len(contexts) == 0 {
+				fmt.Println("No work contexts found.")
+				fmt.Println("Use 'agentic-coder work new <title>' to create one.")
+				return nil
+			}
+
+			fmt.Println("\n📋 Work Contexts")
+			fmt.Println("================")
+			for _, ctx := range contexts {
+				fmt.Printf("  %s\n", ctx.Summary())
+			}
+			return nil
+		},
+	}
+
+	// Show work context
+	showCmd := &cobra.Command{
+		Use:   "show <id>",
+		Short: "Show details of a work context",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := workctx.NewManager("")
+			ctx, err := mgr.Load(args[0])
+			if err != nil {
+				return fmt.Errorf("work context not found: %s", args[0])
+			}
+
+			lang, _ := cmd.Flags().GetString("lang")
+			if lang == "cn" || lang == "zh" {
+				fmt.Println(ctx.GenerateHandoffCN())
+			} else {
+				fmt.Println(ctx.GenerateHandoff())
+			}
+			return nil
+		},
+	}
+	showCmd.Flags().StringP("lang", "l", "en", "Language: en or cn")
+
+	// Update work context
+	updateCmd := &cobra.Command{
+		Use:   "update <id>",
+		Short: "Update a work context",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := workctx.NewManager("")
+			ctx, err := mgr.Load(args[0])
+			if err != nil {
+				return fmt.Errorf("work context not found: %s", args[0])
+			}
+
+			// Update fields
+			if goal, _ := cmd.Flags().GetString("goal"); goal != "" {
+				ctx.Goal = goal
+			}
+			if bg, _ := cmd.Flags().GetString("background"); bg != "" {
+				ctx.Background = bg
+			}
+			if done, _ := cmd.Flags().GetString("done"); done != "" {
+				ctx.AddProgress(done)
+			}
+			if pending, _ := cmd.Flags().GetString("pending"); pending != "" {
+				ctx.AddPending(pending)
+			}
+			if file, _ := cmd.Flags().GetString("file"); file != "" {
+				ctx.AddKeyFile(file)
+			}
+			if note, _ := cmd.Flags().GetString("note"); note != "" {
+				ctx.AddNote(note)
+			}
+			if prov, _ := cmd.Flags().GetString("provider"); prov != "" {
+				ctx.Provider = prov
+			}
+			if mdl, _ := cmd.Flags().GetString("model"); mdl != "" {
+				ctx.Model = mdl
+			}
+
+			if err := mgr.Save(ctx); err != nil {
+				return err
+			}
+
+			fmt.Printf("✅ Updated work context: %s\n", ctx.ID)
+			return nil
+		},
+	}
+	updateCmd.Flags().StringP("goal", "g", "", "Update goal")
+	updateCmd.Flags().StringP("background", "b", "", "Update background")
+	updateCmd.Flags().StringP("done", "d", "", "Add completed item")
+	updateCmd.Flags().StringP("pending", "p", "", "Add pending item")
+	updateCmd.Flags().StringP("file", "f", "", "Add key file")
+	updateCmd.Flags().StringP("note", "n", "", "Add note")
+	updateCmd.Flags().String("provider", "", "Set last used provider")
+	updateCmd.Flags().String("model", "", "Set last used model")
+
+	// Handoff - generate handoff summary
+	handoffCmd := &cobra.Command{
+		Use:   "handoff <id>",
+		Short: "Generate a handoff summary for switching providers",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := workctx.NewManager("")
+			ctx, err := mgr.Load(args[0])
+			if err != nil {
+				return fmt.Errorf("work context not found: %s", args[0])
+			}
+
+			lang, _ := cmd.Flags().GetString("lang")
+			output, _ := cmd.Flags().GetString("output")
+
+			var content string
+			if lang == "cn" || lang == "zh" {
+				content = ctx.GenerateHandoffCN()
+			} else {
+				content = ctx.GenerateHandoff()
+			}
+
+			if output != "" {
+				if err := os.WriteFile(output, []byte(content), 0644); err != nil {
+					return err
+				}
+				fmt.Printf("✅ Handoff saved to: %s\n", output)
+			} else {
+				fmt.Println(content)
+			}
+			return nil
+		},
+	}
+	handoffCmd.Flags().StringP("lang", "l", "en", "Language: en or cn")
+	handoffCmd.Flags().StringP("output", "o", "", "Output file path")
+
+	// Delete work context
+	deleteCmd := &cobra.Command{
+		Use:   "delete <id>",
+		Short: "Delete a work context",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			mgr := workctx.NewManager("")
+			if err := mgr.Delete(args[0]); err != nil {
+				return err
+			}
+			fmt.Printf("✅ Deleted work context: %s\n", args[0])
+			return nil
+		},
+	}
+
+	cmd.AddCommand(newCmd)
+	cmd.AddCommand(listCmd)
+	cmd.AddCommand(showCmd)
+	cmd.AddCommand(updateCmd)
+	cmd.AddCommand(handoffCmd)
+	cmd.AddCommand(deleteCmd)
 
 	return cmd
 }

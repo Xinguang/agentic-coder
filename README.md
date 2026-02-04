@@ -119,6 +119,43 @@ Save API keys for persistent use:
 ./bin/agentic-coder auth logout claude
 ```
 
+### Work Context Management
+
+When switching between AI providers (e.g., when one runs out of tokens), you need to maintain task continuity. Work contexts help you track progress and generate handoff summaries.
+
+```bash
+# Create a new work context
+./bin/agentic-coder work new "Implement user authentication" --goal "Add OAuth2 login"
+
+# Update progress
+./bin/agentic-coder work update abc123 --done "Created user model"
+./bin/agentic-coder work update abc123 --pending "Add login endpoint"
+./bin/agentic-coder work update abc123 --file "pkg/auth/oauth.go"
+./bin/agentic-coder work update abc123 --note "Using JWT for tokens"
+
+# List all work contexts
+./bin/agentic-coder work list
+
+# Show work context details
+./bin/agentic-coder work show abc123
+
+# Generate handoff summary (for switching providers)
+./bin/agentic-coder work handoff abc123
+./bin/agentic-coder work handoff abc123 --lang cn  # Chinese version
+./bin/agentic-coder work handoff abc123 -o handoff.md  # Save to file
+
+# Delete a work context
+./bin/agentic-coder work delete abc123
+```
+
+The handoff summary includes:
+- Goal and background
+- Completed tasks
+- Remaining tasks
+- Key files involved
+- Important notes
+- Token usage per provider
+
 ### Command Line Options
 
 ```
@@ -131,6 +168,7 @@ Available Commands:
   config      Manage configuration
   help        Help about any command
   version     Print version information
+  work        Manage work context for task continuity
 
 Flags:
   -h, --help           help for agentic-coder
