@@ -4,7 +4,9 @@ package tui
 import (
 	"fmt"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -87,15 +89,19 @@ type Model struct {
 	// UI components
 	viewport viewport.Model
 	textarea textarea.Model
+	spinner  spinner.Model
 
 	// State
-	content      *strings.Builder // Must be pointer to avoid copy issues
-	ready        bool
-	isStreaming  bool
-	interrupted  bool
-	model        string
-	cwd          string
-	messageCount int
+	content       *strings.Builder // Must be pointer to avoid copy issues
+	ready         bool
+	isStreaming   bool
+	isThinking    bool
+	thinkingText  string
+	interrupted   bool
+	model         string
+	cwd           string
+	messageCount  int
+	lastActivity  time.Time
 
 	// Dimensions
 	width  int
@@ -132,13 +138,20 @@ func New(cfg Config) Model {
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.FocusedStyle.Base = lipgloss.NewStyle()
 
+	// Create spinner
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+
 	m := Model{
 		textarea:     ta,
+		spinner:      s,
 		content:      &strings.Builder{},
 		model:        cfg.Model,
 		cwd:          cfg.CWD,
 		onSubmit:     cfg.OnSubmit,
 		messageCount: 0,
+		lastActivity: time.Now(),
 	}
 
 	// Add welcome message
@@ -152,7 +165,7 @@ func New(cfg Config) Model {
 
 // Init initializes the model
 func (m Model) Init() tea.Cmd {
-	return textarea.Blink
+	return tea.Batch(textarea.Blink, m.spinner.Tick)
 }
 
 // Update handles messages
@@ -185,9 +198,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 
 					m.isStreaming = true
+					m.isThinking = true
+					m.thinkingText = "Thinking"
 					m.interrupted = false
+					m.lastActivity = time.Now()
 					if m.onSubmit != nil {
-						return m, m.onSubmit(input)
+						return m, tea.Batch(m.onSubmit(input), m.spinner.Tick)
 					}
 				}
 			}
@@ -217,15 +233,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.textarea.SetWidth(m.width - 4)
 
+	case spinner.TickMsg:
+		if m.isStreaming {
+			m.spinner, cmd = m.spinner.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+
 	case StreamTextMsg:
+		m.isThinking = false
+		m.lastActivity = time.Now()
 		m.appendOutput(msg.Text)
 		m.viewport.GotoBottom()
 
 	case StreamThinkingMsg:
+		m.thinkingText = "Thinking"
+		m.lastActivity = time.Now()
 		m.appendOutput(thinkingStyle.Render(msg.Text))
 		m.viewport.GotoBottom()
 
 	case ToolUseMsg:
+		m.isThinking = false
+		m.thinkingText = fmt.Sprintf("Running %s", msg.Name)
+		m.lastActivity = time.Now()
 		m.appendOutput(fmt.Sprintf("\n%s %s\n", toolStyle.Render("⚡"), msg.Name))
 		for k, v := range msg.Params {
 			valStr := fmt.Sprintf("%v", v)
@@ -238,6 +267,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.GotoBottom()
 
 	case ToolResultMsg:
+		m.thinkingText = "Thinking"
+		m.lastActivity = time.Now()
 		if msg.Success {
 			if msg.Summary != "" {
 				m.appendOutput(successStyle.Render(fmt.Sprintf("✓ %s: %s\n", msg.Name, msg.Summary)))
@@ -251,6 +282,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case StreamDoneMsg:
 		m.isStreaming = false
+		m.isThinking = false
+		m.thinkingText = ""
 		if msg.Error != nil && !m.interrupted {
 			m.appendOutput(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
 		}
@@ -283,9 +316,13 @@ func (m Model) View() string {
 
 	streamingIndicator := ""
 	if m.isStreaming {
+		thinkText := m.thinkingText
+		if thinkText == "" {
+			thinkText = "Processing"
+		}
 		streamingIndicator = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("214")).
-			Render(" ● Streaming...")
+			Render(fmt.Sprintf(" %s %s...", m.spinner.View(), thinkText))
 	}
 
 	header := lipgloss.JoinHorizontal(lipgloss.Left, status, streamingIndicator)
