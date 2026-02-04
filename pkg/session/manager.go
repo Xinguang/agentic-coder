@@ -10,8 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/xinguang/agentic-coder/pkg/provider"
 )
 
 // SessionManager manages multiple sessions
@@ -308,6 +306,18 @@ func (s *FileStorage) List() ([]*SessionInfo, error) {
 	return sessions, nil
 }
 
+// rawEntry is used for parsing JSONL entries without interface types
+type rawEntry struct {
+	Type    string `json:"type"`
+	Message *struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	} `json:"message"`
+}
+
 // extractTitleFromSession reads the first user message and generates a title
 func (s *FileStorage) extractTitleFromSession(id string) string {
 	transcriptPath := filepath.Join(s.projectDir, id+".jsonl")
@@ -319,15 +329,15 @@ func (s *FileStorage) extractTitleFromSession(id string) string {
 
 	decoder := json.NewDecoder(f)
 	for {
-		var entry TranscriptEntry
+		var entry rawEntry
 		if err := decoder.Decode(&entry); err != nil {
 			break
 		}
 		// Find first user message
-		if entry.Type == EntryTypeUser && entry.Message != nil {
+		if entry.Type == "user" && entry.Message != nil {
 			for _, block := range entry.Message.Content {
-				if tb, ok := block.(*provider.TextBlock); ok && tb.Text != "" {
-					return truncateTitle(tb.Text, 50)
+				if block.Type == "text" && block.Text != "" {
+					return truncateTitle(block.Text, 50)
 				}
 			}
 		}
