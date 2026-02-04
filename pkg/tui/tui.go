@@ -499,12 +499,10 @@ func (m *Model) handleCommand(input string) tea.Cmd {
 		for i, s := range sessions {
 			marker := "  "
 			if s.IsCurrent {
-				marker = "▶ "
+				marker = successStyle.Render("▶ ")
 			}
-			m.print(fmt.Sprintf("%s%d. %s", marker, i+1, s.ID))
-			if s.Summary != "" {
-				m.print(dimStyle.Render(fmt.Sprintf(" - %s", s.Summary)))
-			}
+			// Show: number. title (msgs, date)
+			m.print(fmt.Sprintf("%s%d. %s", marker, i+1, s.Summary))
 			m.print(dimStyle.Render(fmt.Sprintf(" (%d msgs, %s)\n", s.MessageCount, s.UpdatedAt)))
 		}
 		m.print(dimStyle.Render("─────────────────────────────────────────\n"))

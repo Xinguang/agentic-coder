@@ -130,12 +130,13 @@ func (m *SessionManager) ResumeLatest() (*Session, error) {
 
 // SessionInfo holds session metadata
 type SessionInfo struct {
-	ID          string    `json:"id"`
-	ProjectPath string    `json:"projectPath"`
-	Model       string    `json:"model"`
-	Created     time.Time `json:"created"`
-	LastUpdated time.Time `json:"lastUpdated"`
-	MessageCount int      `json:"messageCount"`
+	ID           string    `json:"id"`
+	Title        string    `json:"title"`
+	ProjectPath  string    `json:"projectPath"`
+	Model        string    `json:"model"`
+	Created      time.Time `json:"created"`
+	LastUpdated  time.Time `json:"lastUpdated"`
+	MessageCount int       `json:"messageCount"`
 }
 
 // Storage interface for session persistence
@@ -180,6 +181,7 @@ func (s *FileStorage) Save(sess *Session) error {
 	metaPath := filepath.Join(s.projectDir, sess.ID+".meta.json")
 	meta := SessionInfo{
 		ID:           sess.ID,
+		Title:        sess.Title,
 		ProjectPath:  sess.ProjectPath,
 		Model:        sess.Model,
 		MessageCount: len(sess.Messages),
@@ -244,6 +246,7 @@ func (s *FileStorage) Load(id string) (*Session, error) {
 
 	sess := &Session{
 		ID:          meta.ID,
+		Title:       meta.Title,
 		ProjectPath: meta.ProjectPath,
 		Model:       meta.Model,
 		Messages:    make([]*TranscriptEntry, 0),

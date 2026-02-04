@@ -493,13 +493,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 				}
 				result := make([]tui.SessionInfo, 0, len(sessions))
 				for _, s := range sessions {
-					summary := ""
-					if s.MessageCount > 0 {
-						summary = fmt.Sprintf("%s", s.Model)
+					title := s.Title
+					if title == "" {
+						title = "(untitled)"
 					}
 					result = append(result, tui.SessionInfo{
-						ID:           s.ID,
-						Summary:      summary,
+						ID:           s.ID[:8], // Short ID for display
+						Summary:      title,
 						MessageCount: s.MessageCount,
 						UpdatedAt:    s.LastUpdated.Format("01/02 15:04"),
 						IsCurrent:    s.ID == currentSess.ID,

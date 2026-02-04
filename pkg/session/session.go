@@ -3,12 +3,13 @@ package session
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/provider"
 	"github.com/xinguang/agentic-coder/pkg/tool"
-	"github.com/google/uuid"
 )
 
 // EntryType represents the type of transcript entry
@@ -81,6 +82,7 @@ type Todo struct {
 // Session represents a conversation session
 type Session struct {
 	ID          string
+	Title       string // Human-readable title (from first message)
 	ProjectPath string
 	CWD         string
 	GitBranch   string
@@ -181,8 +183,25 @@ func (s *Session) AddUserMessage(content string) *TranscriptEntry {
 		},
 	}
 
+	// Set title from first user message if not set
+	if s.Title == "" {
+		s.Title = truncateTitle(content, 50)
+	}
+
 	s.AddEntry(entry)
 	return entry
+}
+
+// truncateTitle creates a short title from content
+func truncateTitle(content string, maxLen int) string {
+	// Remove newlines and extra spaces
+	content = strings.ReplaceAll(content, "\n", " ")
+	content = strings.Join(strings.Fields(content), " ")
+
+	if len(content) <= maxLen {
+		return content
+	}
+	return content[:maxLen] + "..."
 }
 
 // AddToolResult adds a tool result message
