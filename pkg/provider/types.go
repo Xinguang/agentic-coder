@@ -280,6 +280,27 @@ type MessageStopEvent struct{}
 
 func (e *MessageStopEvent) EventType() StreamEvent { return StreamEventStop }
 
+// ToolInfoEvent provides information about a tool call without requiring execution
+// Used by providers that handle tool execution internally (like Claude CLI)
+type ToolInfoEvent struct {
+	ID    string                 `json:"id"`
+	Name  string                 `json:"name"`
+	Input map[string]interface{} `json:"input"`
+}
+
+func (e *ToolInfoEvent) EventType() StreamEvent { return StreamEventBlockStart }
+
+// ToolResultInfoEvent provides information about a tool result
+// Used by providers that handle tool execution internally
+type ToolResultInfoEvent struct {
+	ToolUseID string `json:"tool_use_id"`
+	Name      string `json:"name"`
+	Content   string `json:"content"`
+	IsError   bool   `json:"is_error"`
+}
+
+func (e *ToolResultInfoEvent) EventType() StreamEvent { return StreamEventBlockStop }
+
 // DeltaBlock is the interface for delta updates
 type DeltaBlock interface {
 	DeltaType() string
