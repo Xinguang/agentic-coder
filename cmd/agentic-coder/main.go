@@ -17,6 +17,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/xinguang/agentic-coder/pkg/auth"
 	"github.com/xinguang/agentic-coder/pkg/config"
+	"github.com/xinguang/agentic-coder/pkg/cost"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
 	"github.com/xinguang/agentic-coder/pkg/provider/claude"
@@ -27,6 +28,7 @@ import (
 	"github.com/xinguang/agentic-coder/pkg/provider/geminicli"
 	"github.com/xinguang/agentic-coder/pkg/provider/ollama"
 	"github.com/xinguang/agentic-coder/pkg/provider/openai"
+	"github.com/xinguang/agentic-coder/pkg/review"
 	"github.com/xinguang/agentic-coder/pkg/session"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 	"github.com/xinguang/agentic-coder/pkg/tool/builtin"
@@ -58,6 +60,13 @@ write, edit, and understand code using natural language.`,
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVarP(&useTUI, "tui", "t", true, "Enable interactive TUI mode (default: true)")
 	rootCmd.PersistentFlags().Bool("no-tui", false, "Disable TUI mode, use classic mode")
+	rootCmd.PersistentFlags().Bool("review", false, "Enable auto-review after each response")
+	rootCmd.PersistentFlags().String("review-model", "", "Model for review (default: same as main, e.g., haiku for cheaper review)")
+	rootCmd.PersistentFlags().Int("review-cycles", 5, "Max review cycles before giving up")
+	rootCmd.PersistentFlags().Bool("review-strict", false, "Enable strict review mode")
+	rootCmd.PersistentFlags().Bool("review-security", false, "Check for security issues")
+	rootCmd.PersistentFlags().Bool("review-style", false, "Check code style")
+	rootCmd.PersistentFlags().Bool("review-incremental", false, "Enable incremental review (only review changed code)")
 
 	// Subcommands
 	rootCmd.AddCommand(versionCmd())
@@ -475,6 +484,13 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Check for --no-tui flag
 	noTUI, _ := cmd.Flags().GetBool("no-tui")
+	enableReview, _ := cmd.Flags().GetBool("review")
+	reviewModel, _ := cmd.Flags().GetString("review-model")
+	reviewCycles, _ := cmd.Flags().GetInt("review-cycles")
+	reviewStrict, _ := cmd.Flags().GetBool("review-strict")
+	reviewSecurity, _ := cmd.Flags().GetBool("review-security")
+	reviewStyle, _ := cmd.Flags().GetBool("review-style")
+	reviewIncremental, _ := cmd.Flags().GetBool("review-incremental")
 
 	// Use TUI mode if enabled and not disabled
 	if useTUI && !noTUI {
@@ -487,6 +503,8 @@ func runChat(cmd *cobra.Command, args []string) error {
 		currentSess := sess
 
 		runner := tui.NewSimpleRunner(eng, tui.Config{
+			EnableReview:    enableReview,
+			MaxReviewCycles: reviewCycles,
 			Model:        sess.Model,
 			CWD:          cwd,
 			Version:      version,
@@ -551,8 +569,65 @@ func runChat(cmd *cobra.Command, args []string) error {
 				return sessMgr.SaveSession(currentSess)
 			},
 		})
+
+		// Set up reviewer if enabled
+		if enableReview {
+			reviewProv := prov
+			reviewModelName := model
+			// Use separate model for review if specified
+			if reviewModel != "" {
+				reviewProvType := provider.DetectProviderFromModel(reviewModel)
+				var err error
+				reviewProv, err = createProvider(reviewProvType, apiKey, printer)
+				if err != nil {
+					printer.Warning("Failed to create review provider: %v, using main provider", err)
+					reviewProv = prov
+				} else {
+					reviewModelName = reviewModel
+				}
+			}
+
+			// Build review config
+			reviewCfg := review.DefaultReviewConfig()
+			if reviewStrict {
+				reviewCfg = review.StrictReviewConfig()
+			} else {
+				reviewCfg.CheckSecurity = reviewSecurity
+				reviewCfg.CheckStyle = reviewStyle
+			}
+
+			runner.SetReviewerWithConfig(reviewProv, reviewCfg)
+
+			// Set up incremental review if enabled
+			if reviewIncremental {
+				runner.SetIncrementalReview(true)
+			}
+
+			// Set up review history
+			appDir, err := config.GetAppDir()
+			if err == nil {
+				reviewHistory, err := review.NewReviewHistory(appDir)
+				if err == nil {
+					runner.SetReviewHistory(reviewHistory)
+				}
+			}
+
+			// Build status message
+			mode := "normal"
+			if reviewStrict {
+				mode = "strict"
+			}
+			if reviewIncremental {
+				mode += "+incremental"
+			}
+			printer.Dim("Auto-review enabled: model=%s, cycles=%d, mode=%s", reviewModelName, reviewCycles, mode)
+		}
+
 		return runner.Run()
 	}
+
+	// Create cost tracker for classic mode
+	costTracker := cost.NewTracker(sess.Model)
 
 	// Set callbacks using ui package (classic mode)
 	eng.SetCallbacks(&engine.CallbackOptions{
@@ -593,6 +668,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 				}
 			}
 		},
+		OnUsage: func(inputTokens, outputTokens int) {
+			costTracker.AddUsage(inputTokens, outputTokens)
+		},
 		OnError: func(err error) {
 			printer.Error("%v", err)
 		},
@@ -631,13 +709,14 @@ func runChat(cmd *cobra.Command, args []string) error {
 
 	// Create chat context for handling commands
 	chatCtx := &chatContext{
-		session:    sess,
-		sessMgr:    sessMgr,
-		workMgr:    workMgr,
-		printer:    printer,
-		engine:     eng,
-		provider:   prov,
-		provType:   providerType,
+		session:     sess,
+		sessMgr:     sessMgr,
+		workMgr:     workMgr,
+		printer:     printer,
+		engine:      eng,
+		provider:    prov,
+		provType:    providerType,
+		costTracker: costTracker,
 	}
 
 	// Interactive loop
@@ -710,6 +789,7 @@ type chatContext struct {
 	engine     *engine.Engine
 	provider   provider.AIProvider
 	provType   provider.ProviderType
+	costTracker *cost.Tracker
 }
 
 func handleCommand(cmd string, ctx *chatContext) bool {
@@ -827,18 +907,33 @@ func handleCommand(cmd string, ctx *chatContext) bool {
 		return true
 
 	case "/cost":
-		// Estimate tokens from session
-		tokenCount := ctx.session.EstimateTokens()
-		ctx.printer.CostSummary(
-			int64(tokenCount),
-			0, // Output tokens not tracked separately
-			0, // TODO: calculate cost based on model
-		)
+		// Get cost statistics
+		if ctx.costTracker != nil {
+			stats := ctx.costTracker.GetStats()
+			ctx.printer.Info("Token Usage:")
+			ctx.printer.Dim("  Input tokens:  %d", stats.InputTokens)
+			ctx.printer.Dim("  Output tokens: %d", stats.OutputTokens)
+			ctx.printer.Dim("  Total tokens:  %d", stats.TotalTokens)
+			ctx.printer.Info("Cost (%s): %s", stats.Model, cost.FormatCost(stats.TotalCost))
+		} else {
+			// Fallback to session estimate
+			tokenCount := ctx.session.EstimateTokens()
+			ctx.printer.Info("Estimated tokens: %d", tokenCount)
+			ctx.printer.Dim("(Enable detailed tracking with cost tracker)")
+		}
 		return true
 
 	case "/compact":
-		// TODO: implement conversation compaction
-		ctx.printer.Info("Conversation compaction not yet implemented")
+		// Perform conversation compaction
+		opts := session.DefaultCompactOptions()
+		result := ctx.session.Compact(opts)
+
+		ctx.printer.Info("Conversation compacted:")
+		ctx.printer.Dim("  Messages: %d → %d", result.OriginalMessages, result.RemainingMessages)
+		ctx.printer.Dim("  Tokens: ~%d → ~%d", result.OriginalTokens, result.RemainingTokens)
+		if result.OriginalMessages > result.RemainingMessages {
+			ctx.printer.Success("Saved ~%d tokens", result.OriginalTokens-result.RemainingTokens)
+		}
 		return true
 
 	case "/exit", "/quit", "/q":
@@ -1064,6 +1159,34 @@ func getSystemPrompt() string {
 	return builder.Build()
 }
 
+// AuthError represents an authentication error with helpful guidance
+type AuthError struct {
+	Provider    string
+	EnvVar      string
+	AuthCommand string
+}
+
+func (e *AuthError) Error() string {
+	return fmt.Sprintf("no authentication configured for %s", e.Provider)
+}
+
+// promptForAuth prompts the user to authenticate interactively
+func promptForAuth(providerName, envVar, authCmd string, printer *ui.Printer) bool {
+	printer.Error("❌ No API key found for %s", providerName)
+	fmt.Println()
+	fmt.Println("You have several options:")
+	fmt.Printf("  1. Set environment variable: export %s=your_key\n", envVar)
+	fmt.Printf("  2. Run: %s\n", authCmd)
+	fmt.Println()
+	fmt.Print("Would you like to authenticate now? [y/N]: ")
+
+	reader := bufio.NewReader(os.Stdin)
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(strings.ToLower(input))
+
+	return input == "y" || input == "yes"
+}
+
 // createProvider creates a provider based on type
 func createProvider(providerType provider.ProviderType, customKey string, printer *ui.Printer) (provider.AIProvider, error) {
 	// Try to get credentials from auth manager first
@@ -1083,7 +1206,19 @@ func createProvider(providerType provider.ProviderType, customKey string, printe
 			key = os.Getenv("ANTHROPIC_API_KEY")
 		}
 		if key == "" {
-			return nil, fmt.Errorf("no authentication configured.\nSet ANTHROPIC_API_KEY environment variable, or run 'agentic-coder auth login claude'")
+			// Prompt for interactive authentication
+			if promptForAuth("Claude", "ANTHROPIC_API_KEY", "agentic-coder auth login claude", printer) {
+				ctx := context.Background()
+				if _, err := authMgr.Authenticate(ctx, auth.ProviderClaude); err != nil {
+					return nil, fmt.Errorf("authentication failed: %w", err)
+				}
+				// Retry with new credentials
+				if creds, err := authMgr.GetCredentials(auth.ProviderClaude); err == nil && creds.APIKey != "" {
+					printer.Success("✓ Authentication successful")
+					return claude.New(creds.APIKey, claude.WithBeta("interleaved-thinking-2025-05-14")), nil
+				}
+			}
+			return nil, &AuthError{Provider: "Claude", EnvVar: "ANTHROPIC_API_KEY", AuthCommand: "agentic-coder auth login claude"}
 		}
 		return claude.New(key, claude.WithBeta("interleaved-thinking-2025-05-14")), nil
 
@@ -1104,7 +1239,17 @@ func createProvider(providerType provider.ProviderType, customKey string, printe
 			key = os.Getenv("OPENAI_API_KEY")
 		}
 		if key == "" {
-			return nil, fmt.Errorf("no authentication configured.\nSet OPENAI_API_KEY environment variable, or run 'agentic-coder auth login openai'")
+			if promptForAuth("OpenAI", "OPENAI_API_KEY", "agentic-coder auth login openai", printer) {
+				ctx := context.Background()
+				if _, err := authMgr.Authenticate(ctx, auth.ProviderOpenAI); err != nil {
+					return nil, fmt.Errorf("authentication failed: %w", err)
+				}
+				if creds, err := authMgr.GetCredentials(auth.ProviderOpenAI); err == nil && creds.APIKey != "" {
+					printer.Success("✓ Authentication successful")
+					return openai.New(creds.APIKey), nil
+				}
+			}
+			return nil, &AuthError{Provider: "OpenAI", EnvVar: "OPENAI_API_KEY", AuthCommand: "agentic-coder auth login openai"}
 		}
 		return openai.New(key), nil
 
@@ -1125,7 +1270,17 @@ func createProvider(providerType provider.ProviderType, customKey string, printe
 			key = os.Getenv("GOOGLE_API_KEY")
 		}
 		if key == "" {
-			return nil, fmt.Errorf("no authentication configured.\nSet GOOGLE_API_KEY environment variable, or run 'agentic-coder auth login gemini'")
+			if promptForAuth("Gemini", "GOOGLE_API_KEY", "agentic-coder auth login gemini", printer) {
+				ctx := context.Background()
+				if _, err := authMgr.Authenticate(ctx, auth.ProviderGemini); err != nil {
+					return nil, fmt.Errorf("authentication failed: %w", err)
+				}
+				if creds, err := authMgr.GetCredentials(auth.ProviderGemini); err == nil && creds.APIKey != "" {
+					printer.Success("✓ Authentication successful")
+					return gemini.New(creds.APIKey), nil
+				}
+			}
+			return nil, &AuthError{Provider: "Gemini", EnvVar: "GOOGLE_API_KEY", AuthCommand: "agentic-coder auth login gemini"}
 		}
 		return gemini.New(key), nil
 
@@ -1142,7 +1297,14 @@ func createProvider(providerType provider.ProviderType, customKey string, printe
 			key = os.Getenv("DEEPSEEK_API_KEY")
 		}
 		if key == "" {
-			return nil, fmt.Errorf("DEEPSEEK_API_KEY not set")
+			// DeepSeek doesn't have auth manager integration yet, but provide helpful error
+			printer.Error("❌ No API key found for DeepSeek")
+			fmt.Println()
+			fmt.Println("To use DeepSeek:")
+			fmt.Println("  1. Get an API key from https://platform.deepseek.com/")
+			fmt.Printf("  2. Set environment variable: export DEEPSEEK_API_KEY=your_key\n")
+			fmt.Println()
+			return nil, &AuthError{Provider: "DeepSeek", EnvVar: "DEEPSEEK_API_KEY", AuthCommand: "export DEEPSEEK_API_KEY=your_key"}
 		}
 		printer.Dim("%s Using DeepSeek API", ui.IconKey)
 		return deepseek.New(key), nil
