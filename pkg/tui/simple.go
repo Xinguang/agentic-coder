@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/glamour"
-	"github.com/chzyer/readline"
+	"github.com/peterh/liner"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
 	"github.com/xinguang/agentic-coder/pkg/review"
@@ -101,26 +102,33 @@ func (r *SimpleRunner) SetReviewPipeline(pipeline *review.Pipeline) {
 func (r *SimpleRunner) Run() error {
 	r.printWelcome()
 
-	// Create readline instance with editing support
-	rl, err := readline.NewEx(&readline.Config{
-		Prompt:          "> ",
-		HistoryFile:     "/tmp/agentic-coder-history",
-		HistoryLimit:    1000,
-		InterruptPrompt: "^C",
-		EOFPrompt:       "exit",
+	// Create liner instance with full editing support
+	line := liner.NewLiner()
+	defer line.Close()
 
-		// Enable editing features
-		DisableAutoSaveHistory: false,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create readline: %w", err)
+	// Enable multiline mode and ctrl+c handling
+	line.SetCtrlCAborts(true)
+	line.SetMultiLineMode(true)
+
+	// Load history
+	historyFile := filepath.Join(os.TempDir(), "agentic-coder-history")
+	if f, err := os.Open(historyFile); err == nil {
+		line.ReadHistory(f)
+		f.Close()
 	}
-	defer rl.Close()
+
+	// Save history on exit
+	defer func() {
+		if f, err := os.Create(historyFile); err == nil {
+			line.WriteHistory(f)
+			f.Close()
+		}
+	}()
 
 	for {
-		line, err := rl.Readline()
+		input, err := line.Prompt("> ")
 		if err != nil {
-			if err == readline.ErrInterrupt {
+			if err == liner.ErrPromptAborted {
 				continue // Ctrl+C, just show new prompt
 			}
 			if err == io.EOF {
@@ -130,10 +138,13 @@ func (r *SimpleRunner) Run() error {
 			return err
 		}
 
-		input := strings.TrimSpace(line)
+		input = strings.TrimSpace(input)
 		if input == "" {
 			continue
 		}
+
+		// Add to history
+		line.AppendHistory(input)
 
 		// Handle commands
 		if strings.HasPrefix(input, "/") {
