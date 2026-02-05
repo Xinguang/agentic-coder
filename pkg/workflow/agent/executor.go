@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/tool"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // ExecutorAgent executes tasks using tools
@@ -20,7 +19,7 @@ type ExecutorAgent struct {
 // NewExecutorAgent creates a new executor agent
 func NewExecutorAgent(model string, eng *engine.Engine) *ExecutorAgent {
 	return &ExecutorAgent{
-		BaseAgent: NewBaseAgent(workflow.RoleExecutor, model, nil),
+		BaseAgent: NewBaseAgent(RoleExecutor, model, nil),
 		engine:    eng,
 	}
 }
@@ -40,26 +39,26 @@ Instructions:
 Begin executing the task now.`
 
 // ExecuteTask executes a single task
-func (e *ExecutorAgent) ExecuteTask(ctx context.Context, task *workflow.Task) (*workflow.Execution, error) {
+func (e *ExecutorAgent) ExecuteTask(ctx context.Context, task *Task) (*Execution, error) {
 	startTime := time.Now()
 
-	exec := &workflow.Execution{
+	exec := &Execution{
 		ID:         uuid.New().String(),
 		TaskID:     task.ID,
 		ExecutorID: e.Model(),
 		StartedAt:  startTime,
-		ToolsUsed:  make([]workflow.ToolUsage, 0),
+		ToolsUsed:  make([]ToolUsage, 0),
 	}
 
 	// Track tool usage
-	var toolUsages []workflow.ToolUsage
-	var currentTool *workflow.ToolUsage
+	var toolUsages []ToolUsage
+	var currentTool *ToolUsage
 	var toolStartTime time.Time
 
 	e.engine.SetCallbacks(&engine.CallbackOptions{
 		OnToolUse: func(name string, input map[string]interface{}) {
 			toolStartTime = time.Now()
-			currentTool = &workflow.ToolUsage{
+			currentTool = &ToolUsage{
 				Name:  name,
 				Input: input,
 			}

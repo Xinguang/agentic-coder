@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/provider"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // ReviewerAgent reviews task execution results
@@ -18,7 +17,7 @@ type ReviewerAgent struct {
 // NewReviewerAgent creates a new reviewer agent
 func NewReviewerAgent(model string, prov provider.AIProvider) *ReviewerAgent {
 	return &ReviewerAgent{
-		BaseAgent: NewBaseAgent(workflow.RoleReviewer, model, prov),
+		BaseAgent: NewBaseAgent(RoleReviewer, model, prov),
 	}
 }
 
@@ -55,7 +54,7 @@ Rules:
 - Score 90+ for excellent, 70-89 for good, 50-69 for acceptable, <50 for poor`
 
 // ReviewExecution reviews a task execution
-func (r *ReviewerAgent) ReviewExecution(ctx context.Context, task *workflow.Task, exec *workflow.Execution) (*workflow.Review, error) {
+func (r *ReviewerAgent) ReviewExecution(ctx context.Context, task *Task, exec *Execution) (*Review, error) {
 	input := fmt.Sprintf(`Task: %s
 Description: %s
 
@@ -89,23 +88,23 @@ Execution Result:
 	}
 
 	var result struct {
-		Result        string            `json:"result"`
-		Score         int               `json:"score"`
-		Comments      string            `json:"comments"`
-		Issues        []workflow.Issue  `json:"issues"`
-		CanAutoFix    bool              `json:"can_auto_fix"`
-		FixSuggestion string            `json:"fix_suggestion"`
+		Result        string  `json:"result"`
+		Score         int     `json:"score"`
+		Comments      string  `json:"comments"`
+		Issues        []Issue `json:"issues"`
+		CanAutoFix    bool    `json:"can_auto_fix"`
+		FixSuggestion string  `json:"fix_suggestion"`
 	}
 
 	if err := r.ChatJSON(ctx, reviewerPrompt, input, &result); err != nil {
 		return nil, fmt.Errorf("failed to review execution: %w", err)
 	}
 
-	return &workflow.Review{
+	return &Review{
 		ID:            uuid.New().String(),
 		ExecutionID:   exec.ID,
 		ReviewerID:    r.Model(),
-		Result:        workflow.ReviewResult(result.Result),
+		Result:        ReviewResult(result.Result),
 		Score:         result.Score,
 		Comments:      result.Comments,
 		Issues:        result.Issues,

@@ -8,24 +8,23 @@ import (
 	"strings"
 
 	"github.com/xinguang/agentic-coder/pkg/provider"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // Agent is the interface for all workflow agents
 type Agent interface {
-	Role() workflow.Role
+	Role() Role
 	Model() string
 }
 
 // BaseAgent provides common functionality for all agents
 type BaseAgent struct {
-	role     workflow.Role
+	role     Role
 	model    string
 	provider provider.AIProvider
 }
 
 // NewBaseAgent creates a new base agent
-func NewBaseAgent(role workflow.Role, model string, prov provider.AIProvider) *BaseAgent {
+func NewBaseAgent(role Role, model string, prov provider.AIProvider) *BaseAgent {
 	return &BaseAgent{
 		role:     role,
 		model:    model,
@@ -34,7 +33,7 @@ func NewBaseAgent(role workflow.Role, model string, prov provider.AIProvider) *B
 }
 
 // Role returns the agent's role
-func (a *BaseAgent) Role() workflow.Role {
+func (a *BaseAgent) Role() Role {
 	return a.role
 }
 

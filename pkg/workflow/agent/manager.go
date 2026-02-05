@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/provider"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // ManagerAgent handles requirement analysis and task planning
@@ -18,7 +17,7 @@ type ManagerAgent struct {
 // NewManagerAgent creates a new manager agent
 func NewManagerAgent(model string, prov provider.AIProvider) *ManagerAgent {
 	return &ManagerAgent{
-		BaseAgent: NewBaseAgent(workflow.RoleManager, model, prov),
+		BaseAgent: NewBaseAgent(RoleManager, model, prov),
 	}
 }
 
@@ -55,7 +54,7 @@ Rules:
 - Order tasks logically`
 
 // AnalyzeRequirement analyzes a requirement and creates a task plan
-func (m *ManagerAgent) AnalyzeRequirement(ctx context.Context, requirement string) (*workflow.TaskPlan, error) {
+func (m *ManagerAgent) AnalyzeRequirement(ctx context.Context, requirement string) (*TaskPlan, error) {
 	var result struct {
 		Analysis string `json:"analysis"`
 		Tasks    []struct {
@@ -72,22 +71,22 @@ func (m *ManagerAgent) AnalyzeRequirement(ctx context.Context, requirement strin
 		return nil, fmt.Errorf("failed to analyze requirement: %w", err)
 	}
 
-	// Convert to workflow.Task
-	tasks := make([]*workflow.Task, len(result.Tasks))
+	// Convert to Task
+	tasks := make([]*Task, len(result.Tasks))
 	for i, t := range result.Tasks {
-		tasks[i] = &workflow.Task{
+		tasks[i] = &Task{
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
 			Priority:    t.Priority,
 			DependsOn:   t.DependsOn,
 			Resources:   t.Resources,
-			Status:      workflow.TaskStatusPending,
+			Status:      TaskStatusPending,
 			CreatedAt:   time.Now(),
 		}
 	}
 
-	return &workflow.TaskPlan{
+	return &TaskPlan{
 		ID:          uuid.New().String(),
 		Requirement: requirement,
 		Analysis:    result.Analysis,
@@ -122,7 +121,7 @@ Output JSON format:
 }`
 
 // Replan creates a new plan after a failure
-func (m *ManagerAgent) Replan(ctx context.Context, requirement, failedTask, failureReason string) (*workflow.TaskPlan, error) {
+func (m *ManagerAgent) Replan(ctx context.Context, requirement, failedTask, failureReason string) (*TaskPlan, error) {
 	prompt := fmt.Sprintf(managerReplanPrompt, requirement, failedTask, failureReason)
 
 	var result struct {
@@ -141,21 +140,21 @@ func (m *ManagerAgent) Replan(ctx context.Context, requirement, failedTask, fail
 		return nil, fmt.Errorf("failed to replan: %w", err)
 	}
 
-	tasks := make([]*workflow.Task, len(result.Tasks))
+	tasks := make([]*Task, len(result.Tasks))
 	for i, t := range result.Tasks {
-		tasks[i] = &workflow.Task{
+		tasks[i] = &Task{
 			ID:          t.ID,
 			Title:       t.Title,
 			Description: t.Description,
 			Priority:    t.Priority,
 			DependsOn:   t.DependsOn,
 			Resources:   t.Resources,
-			Status:      workflow.TaskStatusPending,
+			Status:      TaskStatusPending,
 			CreatedAt:   time.Now(),
 		}
 	}
 
-	return &workflow.TaskPlan{
+	return &TaskPlan{
 		ID:          uuid.New().String(),
 		Requirement: requirement,
 		Analysis:    result.Analysis,
@@ -175,7 +174,7 @@ Given the execution results, generate a comprehensive summary including:
 Be concise but thorough. Focus on value delivered.`
 
 // GenerateReport creates a final report
-func (m *ManagerAgent) GenerateReport(ctx context.Context, plan *workflow.TaskPlan, eval *workflow.Evaluation) (*workflow.FinalReport, error) {
+func (m *ManagerAgent) GenerateReport(ctx context.Context, plan *TaskPlan, eval *Evaluation) (*FinalReport, error) {
 	// Build context for the report
 	input := fmt.Sprintf(`Original requirement: %s
 
@@ -209,13 +208,13 @@ Evaluation:
 	// Calculate statistics
 	var completed, failed, totalRetries int
 	var totalDuration time.Duration
-	summaries := make([]workflow.TaskSummary, len(plan.Tasks))
+	summaries := make([]TaskSummary, len(plan.Tasks))
 
 	for i, task := range plan.Tasks {
 		switch task.Status {
-		case workflow.TaskStatusCompleted:
+		case TaskStatusCompleted:
 			completed++
-		case workflow.TaskStatusFailed, workflow.TaskStatusCancelled:
+		case TaskStatusFailed, TaskStatusCancelled:
 			failed++
 		}
 		totalRetries += task.RetryCount
@@ -226,7 +225,7 @@ Evaluation:
 			totalDuration += duration
 		}
 
-		summaries[i] = workflow.TaskSummary{
+		summaries[i] = TaskSummary{
 			TaskID:     task.ID,
 			Title:      task.Title,
 			Status:     task.Status,
@@ -242,7 +241,7 @@ Evaluation:
 		status = "failed"
 	}
 
-	return &workflow.FinalReport{
+	return &FinalReport{
 		ID:            uuid.New().String(),
 		PlanID:        plan.ID,
 		Requirement:   plan.Requirement,
@@ -259,18 +258,18 @@ Evaluation:
 	}, nil
 }
 
-func formatTaskSummaries(tasks []*workflow.Task) string {
+func formatTaskSummaries(tasks []*Task) string {
 	var result string
 	for _, t := range tasks {
 		status := "⬜"
 		switch t.Status {
-		case workflow.TaskStatusCompleted:
+		case TaskStatusCompleted:
 			status = "✅"
-		case workflow.TaskStatusFailed:
+		case TaskStatusFailed:
 			status = "❌"
-		case workflow.TaskStatusCancelled:
+		case TaskStatusCancelled:
 			status = "⏹️"
-		case workflow.TaskStatusRunning:
+		case TaskStatusRunning:
 			status = "🔵"
 		}
 		result += fmt.Sprintf("  %s %s: %s\n", status, t.ID, t.Title)

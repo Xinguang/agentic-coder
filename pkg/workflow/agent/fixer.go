@@ -8,7 +8,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/tool"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // FixerAgent fixes issues identified during review
@@ -20,7 +19,7 @@ type FixerAgent struct {
 // NewFixerAgent creates a new fixer agent
 func NewFixerAgent(model string, eng *engine.Engine) *FixerAgent {
 	return &FixerAgent{
-		BaseAgent: NewBaseAgent(workflow.RoleFixer, model, nil),
+		BaseAgent: NewBaseAgent(RoleFixer, model, nil),
 		engine:    eng,
 	}
 }
@@ -43,15 +42,15 @@ Instructions:
 Begin fixing the issues now.`
 
 // FixIssues fixes issues from a review
-func (f *FixerAgent) FixIssues(ctx context.Context, task *workflow.Task, review *workflow.Review) (*workflow.Execution, error) {
+func (f *FixerAgent) FixIssues(ctx context.Context, task *Task, review *Review) (*Execution, error) {
 	startTime := time.Now()
 
-	exec := &workflow.Execution{
+	exec := &Execution{
 		ID:         uuid.New().String(),
 		TaskID:     task.ID,
 		ExecutorID: f.Model() + " (fixer)",
 		StartedAt:  startTime,
-		ToolsUsed:  make([]workflow.ToolUsage, 0),
+		ToolsUsed:  make([]ToolUsage, 0),
 	}
 
 	// Format issues
@@ -68,14 +67,14 @@ func (f *FixerAgent) FixIssues(ctx context.Context, task *workflow.Task, review 
 	}
 
 	// Track tool usage
-	var toolUsages []workflow.ToolUsage
-	var currentTool *workflow.ToolUsage
+	var toolUsages []ToolUsage
+	var currentTool *ToolUsage
 	var toolStartTime time.Time
 
 	f.engine.SetCallbacks(&engine.CallbackOptions{
 		OnToolUse: func(name string, input map[string]interface{}) {
 			toolStartTime = time.Now()
-			currentTool = &workflow.ToolUsage{
+			currentTool = &ToolUsage{
 				Name:  name,
 				Input: input,
 			}

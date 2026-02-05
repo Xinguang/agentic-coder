@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/xinguang/agentic-coder/pkg/provider"
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 // EvaluatorAgent evaluates the overall workflow result
@@ -18,7 +17,7 @@ type EvaluatorAgent struct {
 // NewEvaluatorAgent creates a new evaluator agent
 func NewEvaluatorAgent(model string, prov provider.AIProvider) *EvaluatorAgent {
 	return &EvaluatorAgent{
-		BaseAgent: NewBaseAgent(workflow.RoleEvaluator, model, prov),
+		BaseAgent: NewBaseAgent(RoleEvaluator, model, prov),
 	}
 }
 
@@ -51,7 +50,7 @@ Scoring guide:
 Be objective and constructive in your evaluation.`
 
 // Evaluate evaluates the overall workflow result
-func (e *EvaluatorAgent) Evaluate(ctx context.Context, plan *workflow.TaskPlan) (*workflow.Evaluation, error) {
+func (e *EvaluatorAgent) Evaluate(ctx context.Context, plan *TaskPlan) (*Evaluation, error) {
 	// Build evaluation context
 	input := fmt.Sprintf(`Original Requirement: %s
 
@@ -68,8 +67,8 @@ Overall Statistics:
 		plan.Analysis,
 		formatTaskResults(plan.Tasks),
 		len(plan.Tasks),
-		countByStatus(plan.Tasks, workflow.TaskStatusCompleted),
-		countByStatus(plan.Tasks, workflow.TaskStatusFailed)+countByStatus(plan.Tasks, workflow.TaskStatusCancelled),
+		countByStatus(plan.Tasks, TaskStatusCompleted),
+		countByStatus(plan.Tasks, TaskStatusFailed)+countByStatus(plan.Tasks, TaskStatusCancelled),
 	)
 
 	var result struct {
@@ -84,7 +83,7 @@ Overall Statistics:
 		return nil, fmt.Errorf("failed to evaluate: %w", err)
 	}
 
-	return &workflow.Evaluation{
+	return &Evaluation{
 		ID:               uuid.New().String(),
 		PlanID:           plan.ID,
 		EvaluatorID:      e.Model(),
@@ -97,7 +96,7 @@ Overall Statistics:
 	}, nil
 }
 
-func formatTaskResults(tasks []*workflow.Task) string {
+func formatTaskResults(tasks []*Task) string {
 	result := ""
 	for _, task := range tasks {
 		status := string(task.Status)
@@ -122,7 +121,7 @@ func formatTaskResults(tasks []*workflow.Task) string {
 	return result
 }
 
-func countByStatus(tasks []*workflow.Task, status workflow.TaskStatus) int {
+func countByStatus(tasks []*Task, status TaskStatus) int {
 	count := 0
 	for _, task := range tasks {
 		if task.Status == status {

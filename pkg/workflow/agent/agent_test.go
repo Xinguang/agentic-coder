@@ -2,8 +2,6 @@ package agent
 
 import (
 	"testing"
-
-	"github.com/xinguang/agentic-coder/pkg/workflow"
 )
 
 func TestExtractJSON_RawJSON(t *testing.T) {
@@ -73,9 +71,9 @@ func TestExtractJSON_Array(t *testing.T) {
 }
 
 func TestBaseAgent_Role(t *testing.T) {
-	agent := NewBaseAgent(workflow.RoleManager, "sonnet", nil)
+	agent := NewBaseAgent(RoleManager, "sonnet", nil)
 
-	if agent.Role() != workflow.RoleManager {
+	if agent.Role() != RoleManager {
 		t.Errorf("Expected role Manager, got %s", agent.Role())
 	}
 
@@ -106,11 +104,11 @@ func TestTruncate(t *testing.T) {
 }
 
 func TestFormatTaskResults(t *testing.T) {
-	tasks := []*workflow.Task{
+	tasks := []*Task{
 		{
 			ID:     "task-1",
 			Title:  "Test Task",
-			Status: workflow.TaskStatusCompleted,
+			Status: TaskStatusCompleted,
 		},
 	}
 
@@ -130,24 +128,24 @@ func TestFormatTaskResults(t *testing.T) {
 }
 
 func TestCountByStatus(t *testing.T) {
-	tasks := []*workflow.Task{
-		{ID: "1", Status: workflow.TaskStatusCompleted},
-		{ID: "2", Status: workflow.TaskStatusCompleted},
-		{ID: "3", Status: workflow.TaskStatusFailed},
-		{ID: "4", Status: workflow.TaskStatusPending},
+	tasks := []*Task{
+		{ID: "1", Status: TaskStatusCompleted},
+		{ID: "2", Status: TaskStatusCompleted},
+		{ID: "3", Status: TaskStatusFailed},
+		{ID: "4", Status: TaskStatusPending},
 	}
 
-	completed := countByStatus(tasks, workflow.TaskStatusCompleted)
+	completed := countByStatus(tasks, TaskStatusCompleted)
 	if completed != 2 {
 		t.Errorf("Expected 2 completed, got %d", completed)
 	}
 
-	failed := countByStatus(tasks, workflow.TaskStatusFailed)
+	failed := countByStatus(tasks, TaskStatusFailed)
 	if failed != 1 {
 		t.Errorf("Expected 1 failed, got %d", failed)
 	}
 
-	pending := countByStatus(tasks, workflow.TaskStatusPending)
+	pending := countByStatus(tasks, TaskStatusPending)
 	if pending != 1 {
 		t.Errorf("Expected 1 pending, got %d", pending)
 	}
