@@ -36,6 +36,10 @@ type Engine struct {
 	onToolResult func(name string, result *tool.Output)
 	onUsage      func(inputTokens, outputTokens int)
 	onError      func(err error)
+
+	// External tool callbacks (for tools executed by external providers)
+	onExternalToolUse    func(name string, input map[string]interface{})
+	onExternalToolResult func(name string, result *tool.Output)
 }
 
 // EngineOptions holds engine configuration
@@ -95,6 +99,12 @@ func (e *Engine) SetCallbacks(opts *CallbackOptions) {
 	if opts.OnError != nil {
 		e.onError = opts.OnError
 	}
+	if opts.OnExternalToolUse != nil {
+		e.onExternalToolUse = opts.OnExternalToolUse
+	}
+	if opts.OnExternalToolResult != nil {
+		e.onExternalToolResult = opts.OnExternalToolResult
+	}
 }
 
 // CallbackOptions holds callback functions
@@ -105,6 +115,10 @@ type CallbackOptions struct {
 	OnToolResult func(name string, result *tool.Output)
 	OnUsage      func(inputTokens, outputTokens int)
 	OnError      func(err error)
+
+	// External tool callbacks (for tools executed by external providers like Claude CLI)
+	OnExternalToolUse    func(name string, input map[string]interface{})
+	OnExternalToolResult func(name string, result *tool.Output)
 }
 
 // SetSession changes the current session
@@ -385,6 +399,21 @@ func (e *Engine) callProvider(ctx context.Context, req *provider.Request) (*prov
 
 		case *provider.MessageStopEvent:
 			// Message complete
+
+		case *provider.ToolInfoEvent:
+			// Tool info from providers that handle tools internally (like Claude CLI)
+			if e.onExternalToolUse != nil {
+				e.onExternalToolUse(ev.Name, ev.Input)
+			}
+
+		case *provider.ToolResultInfoEvent:
+			// Tool result info from providers that handle tools internally
+			if e.onExternalToolResult != nil {
+				e.onExternalToolResult(ev.Name, &tool.Output{
+					Content: ev.Content,
+					IsError: ev.IsError,
+				})
+			}
 		}
 	}
 
