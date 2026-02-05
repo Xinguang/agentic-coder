@@ -313,6 +313,226 @@ func (s *Session) EstimateTokens() int {
 	return total
 }
 
+// CompactOptions configures compaction behavior
+type CompactOptions struct {
+	KeepRecentMessages int     // Number of recent messages to always keep
+	TargetRatio        float64 // Target token usage ratio (e.g., 0.5 = 50%)
+	PreserveTodos      bool    // Keep todo-related messages
+	PreserveToolCalls  bool    // Keep tool call results (summarized)
+}
+
+// DefaultCompactOptions returns sensible defaults
+func DefaultCompactOptions() *CompactOptions {
+	return &CompactOptions{
+		KeepRecentMessages: 10,
+		TargetRatio:        0.5,
+		PreserveTodos:      true,
+		PreserveToolCalls:  true,
+	}
+}
+
+// CompactResult contains information about the compaction
+type CompactResult struct {
+	OriginalMessages  int
+	RemainingMessages int
+	OriginalTokens    int
+	RemainingTokens   int
+	Summary           string
+}
+
+// Compact reduces the session size by summarizing old messages
+func (s *Session) Compact(opts *CompactOptions) *CompactResult {
+	if opts == nil {
+		opts = DefaultCompactOptions()
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	originalCount := len(s.Messages)
+	originalTokens := s.TokenCount
+
+	if originalCount <= opts.KeepRecentMessages {
+		return &CompactResult{
+			OriginalMessages:  originalCount,
+			RemainingMessages: originalCount,
+			OriginalTokens:    originalTokens,
+			RemainingTokens:   originalTokens,
+			Summary:           "No compaction needed",
+		}
+	}
+
+	// Split messages: old (to compact) and recent (to keep)
+	splitPoint := originalCount - opts.KeepRecentMessages
+	oldMessages := s.Messages[:splitPoint]
+	recentMessages := s.Messages[splitPoint:]
+
+	// Generate summary of old messages
+	summary := s.summarizeMessages(oldMessages, opts)
+
+	// Create a new system entry with the summary
+	summaryEntry := &TranscriptEntry{
+		Type:      EntryTypeSystem,
+		UUID:      uuid.New().String(),
+		Timestamp: time.Now(),
+		SessionID: s.ID,
+		Message: &Message{
+			Role: "user",
+			Content: []provider.ContentBlock{
+				&provider.TextBlock{
+					Text: "[Conversation Summary]\n" + summary,
+				},
+			},
+		},
+	}
+
+	// Rebuild message tree
+	newMessages := make([]*TranscriptEntry, 0, len(recentMessages)+1)
+	newMessages = append(newMessages, summaryEntry)
+	newMessages = append(newMessages, recentMessages...)
+
+	// Update parent UUIDs
+	for i, entry := range newMessages {
+		if i == 0 {
+			entry.ParentUUID = nil
+		} else {
+			parent := newMessages[i-1].UUID
+			entry.ParentUUID = &parent
+		}
+	}
+
+	// Rebuild message tree map
+	newTree := make(map[string]*TranscriptEntry)
+	for _, entry := range newMessages {
+		newTree[entry.UUID] = entry
+	}
+
+	s.Messages = newMessages
+	s.MessageTree = newTree
+	s.CurrentUUID = newMessages[len(newMessages)-1].UUID
+
+	// Recalculate tokens
+	newTokens := s.estimateTokensUnsafe()
+
+	return &CompactResult{
+		OriginalMessages:  originalCount,
+		RemainingMessages: len(newMessages),
+		OriginalTokens:    originalTokens,
+		RemainingTokens:   newTokens,
+		Summary:           summary,
+	}
+}
+
+// summarizeMessages creates a summary of messages
+func (s *Session) summarizeMessages(entries []*TranscriptEntry, opts *CompactOptions) string {
+	var sb strings.Builder
+
+	sb.WriteString("Previous conversation summary:\n\n")
+
+	// Track topics discussed
+	topics := make([]string, 0)
+	toolsUsed := make(map[string]int)
+	keyDecisions := make([]string, 0)
+
+	for _, entry := range entries {
+		if entry.Message == nil {
+			continue
+		}
+
+		for _, block := range entry.Message.Content {
+			switch b := block.(type) {
+			case *provider.TextBlock:
+				// Extract key information from text
+				text := b.Text
+				if len(text) > 200 {
+					// For long texts, just note the topic
+					firstLine := strings.Split(text, "\n")[0]
+					if len(firstLine) > 100 {
+						firstLine = firstLine[:100] + "..."
+					}
+					topics = append(topics, firstLine)
+				}
+			case *provider.ToolUseBlock:
+				if opts.PreserveToolCalls {
+					toolsUsed[b.Name]++
+				}
+			case *provider.ToolResultBlock:
+				// Note significant tool results
+				if !b.IsError && len(b.Content) > 0 {
+					// Just count, don't store full content
+				}
+			}
+		}
+
+		// Check for todos
+		if opts.PreserveTodos && len(entry.Todos) > 0 {
+			for _, todo := range entry.Todos {
+				if todo.Status == "completed" {
+					keyDecisions = append(keyDecisions, "✓ "+todo.Content)
+				}
+			}
+		}
+	}
+
+	// Build summary
+	if len(topics) > 0 {
+		sb.WriteString("Topics discussed:\n")
+		for i, topic := range topics {
+			if i >= 5 { // Limit to 5 topics
+				sb.WriteString("  ... and more\n")
+				break
+			}
+			sb.WriteString("  • " + topic + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(toolsUsed) > 0 {
+		sb.WriteString("Tools used:\n")
+		for tool, count := range toolsUsed {
+			sb.WriteString("  • " + tool)
+			if count > 1 {
+				sb.WriteString(" (×" + string(rune('0'+count)) + ")")
+			}
+			sb.WriteString("\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(keyDecisions) > 0 {
+		sb.WriteString("Completed tasks:\n")
+		for _, decision := range keyDecisions {
+			sb.WriteString("  " + decision + "\n")
+		}
+	}
+
+	return sb.String()
+}
+
+// estimateTokensUnsafe estimates tokens without locking (caller must hold lock)
+func (s *Session) estimateTokensUnsafe() int {
+	total := 0
+	for _, entry := range s.Messages {
+		if entry.Message == nil {
+			continue
+		}
+
+		for _, block := range entry.Message.Content {
+			switch b := block.(type) {
+			case *provider.TextBlock:
+				total += len(b.Text) / 4
+			case *provider.ToolResultBlock:
+				total += len(b.Content) / 4
+			case *provider.ThinkingBlock:
+				total += len(b.Thinking) / 4
+			}
+		}
+	}
+
+	s.TokenCount = total
+	return total
+}
+
 // MarshalJSON implements json.Marshaler for TranscriptEntry
 func (e *TranscriptEntry) MarshalJSON() ([]byte, error) {
 	type Alias TranscriptEntry
