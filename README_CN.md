@@ -156,6 +156,45 @@ export OPENAI_API_KEY="your-api-key"
 - 重要说明
 - 各 provider 的 token 使用情况
 
+### 多 Agent 工作流
+
+对于需要规划、执行和审查的复杂任务，使用 workflow 命令：
+
+```bash
+# 基本用法
+./bin/agentic-coder workflow "添加 JWT 用户认证"
+
+# 自定义并发数
+./bin/agentic-coder workflow --max-executors 10 "重构代码库"
+
+# 为不同角色指定模型
+./bin/agentic-coder workflow --model opus --executor-model sonnet "构建 REST API"
+
+# 禁用自动修复
+./bin/agentic-coder workflow --auto-fix=false "迁移数据库架构"
+```
+
+工作流使用多个 AI Agent：
+- **Manager**：分析需求，创建带依赖关系的任务计划
+- **Executors**：并发执行各个任务（默认：5 个）
+- **Reviewers**：审查任务执行质量
+- **Fixers**：自动修复审查中发现的小问题
+- **Evaluator**：评估整体结果质量
+
+工作流参数：
+| 参数 | 默认值 | 描述 |
+|------|--------|------|
+| `--max-executors` | 5 | 最大并发执行器数量 |
+| `--max-reviewers` | 2 | 最大并发审查器数量 |
+| `--max-retries` | 3 | 每个任务的最大重试次数 |
+| `--auto-fix` | true | 启用小问题自动修复 |
+| `--model` | sonnet | 所有角色的默认模型 |
+| `--manager-model` | - | Manager 使用的模型 |
+| `--executor-model` | - | Executor 使用的模型 |
+| `--reviewer-model` | - | Reviewer 使用的模型 |
+| `--fixer-model` | - | Fixer 使用的模型 |
+| `--evaluator-model` | - | Evaluator 使用的模型 |
+
 ### 命令行选项
 
 ```
@@ -169,7 +208,7 @@ export OPENAI_API_KEY="your-api-key"
   help        查看帮助
   version     打印版本信息
   work        管理工作上下文（任务连续性）
-  version     打印版本信息
+  workflow    运行多 Agent 工作流（复杂任务）
 
 选项:
   -h, --help           帮助信息
@@ -231,6 +270,8 @@ agentic-coder/
 │   ├── session/          # 会话管理
 │   ├── tool/             # 工具实现
 │   │   └── builtin/      # 内置工具
+│   ├── workflow/         # 多 Agent 工作流引擎
+│   │   └── agent/        # 工作流 Agent 实现
 │   └── ...
 ├── devdocs/              # 开发文档
 │   ├── DESIGN.md         # 设计文档（英文）

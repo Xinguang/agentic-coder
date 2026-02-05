@@ -157,6 +157,45 @@ The handoff summary includes:
 - Important notes
 - Token usage per provider
 
+### Multi-Agent Workflow
+
+For complex tasks that require planning, execution, and review, use the workflow command:
+
+```bash
+# Basic usage
+./bin/agentic-coder workflow "Add user authentication with JWT"
+
+# With custom concurrency
+./bin/agentic-coder workflow --max-executors 10 "Refactor the codebase"
+
+# With custom models for different roles
+./bin/agentic-coder workflow --model opus --executor-model sonnet "Build REST API"
+
+# Disable auto-fix
+./bin/agentic-coder workflow --auto-fix=false "Migrate database schema"
+```
+
+The workflow uses multiple AI agents:
+- **Manager**: Analyzes requirements and creates task plans with dependencies
+- **Executors**: Execute individual tasks concurrently (default: 5)
+- **Reviewers**: Review task execution quality
+- **Fixers**: Auto-fix minor issues found during review
+- **Evaluator**: Evaluate overall result quality
+
+Workflow flags:
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--max-executors` | 5 | Maximum concurrent executor agents |
+| `--max-reviewers` | 2 | Maximum concurrent reviewer agents |
+| `--max-retries` | 3 | Maximum retries per task |
+| `--auto-fix` | true | Enable auto-fix for minor issues |
+| `--model` | sonnet | Default model for all roles |
+| `--manager-model` | - | Model for manager (overrides --model) |
+| `--executor-model` | - | Model for executors (overrides --model) |
+| `--reviewer-model` | - | Model for reviewers (overrides --model) |
+| `--fixer-model` | - | Model for fixers (overrides --model) |
+| `--evaluator-model` | - | Model for evaluator (overrides --model) |
+
 ### Command Line Options
 
 ```
@@ -170,6 +209,7 @@ Available Commands:
   help        Help about any command
   version     Print version information
   work        Manage work context for task continuity
+  workflow    Run multi-agent workflow for complex tasks
 
 Flags:
   -h, --help           help for agentic-coder
@@ -231,6 +271,8 @@ agentic-coder/
 │   ├── session/          # Session management
 │   ├── tool/             # Tool implementations
 │   │   └── builtin/      # Built-in tools
+│   ├── workflow/         # Multi-agent workflow engine
+│   │   └── agent/        # Workflow agent implementations
 │   └── ...
 ├── Makefile
 └── README.md
@@ -374,6 +416,15 @@ go test ./pkg/provider/claude -v
 
 ```
 CLI Layer (cmd/agentic-coder)
+    ↓
+┌─────────────────────────────────────┐
+│  Workflow Layer (pkg/workflow)      │  ← Multi-agent orchestration
+│  ┌─────────────────────────────────┐│
+│  │ Manager → Executors → Reviewers ││
+│  │           ↓                     ││
+│  │         Fixers → Evaluator      ││
+│  └─────────────────────────────────┘│
+└─────────────────────────────────────┘
     ↓
 Engine Layer (pkg/engine)
     ↓

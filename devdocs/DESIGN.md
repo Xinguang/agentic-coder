@@ -49,6 +49,13 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                         CLI (main.go)                           │
 ├─────────────────────────────────────────────────────────────────┤
+│                       Workflow Layer                            │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  Manager ─► Executors (concurrent) ─► Reviewers ─► Fixers   ││
+│  │                         │                                   ││
+│  │                     Evaluator                               ││
+│  └─────────────────────────────────────────────────────────────┘│
+├─────────────────────────────────────────────────────────────────┤
 │                         Engine Layer                            │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
 │  │   Engine    │  │   Prompt    │  │   Session Manager       │ │
@@ -216,7 +223,122 @@ type Session struct {
 
 Sessions are automatically saved to `~/.config/agentic-coder/sessions/`.
 
-### 5. Authentication (`pkg/auth/`)
+### 5. Multi-Agent Workflow System (`pkg/workflow/`)
+
+The workflow system orchestrates multiple AI agents for complex tasks that benefit from planning, concurrent execution, and quality review.
+
+#### Agent Roles
+
+| Role | Responsibility |
+|------|----------------|
+| **Manager** | Analyzes requirements, creates task plans with dependencies |
+| **Executor** | Executes individual tasks using the engine |
+| **Reviewer** | Reviews execution quality, identifies issues |
+| **Fixer** | Auto-fixes minor issues found during review |
+| **Evaluator** | Evaluates overall result quality |
+
+#### Workflow Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Workflow                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                    Manager Agent                             ││
+│  │  - Analyze requirement                                       ││
+│  │  - Create task plan with DAG dependencies                   ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │              Concurrent Executor Pool                        ││
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       ││
+│  │  │Executor 1│ │Executor 2│ │Executor 3│ │Executor N│       ││
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘       ││
+│  │  (semaphore-controlled, default max: 5)                     ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │              Review & Fix Loop                               ││
+│  │  ┌──────────┐     ┌──────────┐                              ││
+│  │  │ Reviewer │ ──► │  Fixer   │  (if minor issues)           ││
+│  │  └──────────┘     └──────────┘                              ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                   Evaluator Agent                            ││
+│  │  - Compare result against requirement                        ││
+│  │  - Generate quality score and report                        ││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Components
+
+**Task Plan & DAG Dependencies**
+```go
+type TaskPlan struct {
+    ID          string
+    Requirement string
+    Analysis    string
+    Tasks       []*Task
+}
+
+type Task struct {
+    ID           string
+    Title        string
+    Description  string
+    Dependencies []string  // DAG edges
+    Priority     int
+    Status       TaskStatus
+    Execution    *Execution
+    Reviews      []*Review
+}
+```
+
+**Concurrency Control**
+- Semaphore-based executor pool (configurable max workers)
+- Resource locking prevents file conflicts between concurrent tasks
+- DAG-based dependency resolution ensures correct execution order
+
+**Review & Retry Loop**
+```
+Execute Task
+     │
+     ▼
+  Review
+     │
+     ├─► Pass ──────────► Complete
+     │
+     ├─► Minor Issues ──► Auto-Fix ──► Re-review
+     │
+     └─► Major Issues ──► Retry (up to max retries) ──► Fail
+```
+
+#### Configuration
+
+```go
+type WorkflowConfig struct {
+    MaxExecutors  int    // default: 5
+    MaxReviewers  int    // default: 2
+    MaxFixers     int    // default: 2
+    MaxRetries    int    // default: 3
+    EnableAutoFix bool   // default: true
+    Models        RoleModels
+}
+
+type RoleModels struct {
+    Default   string  // used if role-specific not set
+    Manager   string
+    Executor  string
+    Reviewer  string
+    Fixer     string
+    Evaluator string
+}
+```
+
+### 6. Authentication (`pkg/auth/`)
 
 Manages credentials for different providers.
 
@@ -450,17 +572,18 @@ INTEGRATION_TEST=1 go test ./... -v
 
 ### Long-term Roadmap
 
-1. **Multi-agent system**: Agent orchestration and collaboration
+1. ~~**Multi-agent system**: Agent orchestration and collaboration~~ ✅ Implemented in v0.2.0
 2. **IDE integration**: VS Code, JetBrains plugins
 3. **Web UI**: Web-based user interface
 4. **Cloud service**: Hosted version and team collaboration
+5. **Advanced workflow features**: Dynamic replanning, inter-task communication
 
 ## Maintainers
 
 - **Project Creator**: @xinguang
-- **Current Version**: v0.1.0
+- **Current Version**: v0.2.0
 - **Last Updated**: 2025-02-05
-- **Document Version**: v1.0.0
+- **Document Version**: v1.1.0
 
 ---
 

@@ -54,9 +54,19 @@
 ┌─────────────────────────────────────────────────────────────────┐
 │                    CLI Layer (cmd/agentic-coder)                │
 │  Entry: main.go (~1,330 lines)                                  │
-│  ├─ Commands: auth, work, config, version                       │
+│  ├─ Commands: auth, work, config, version, workflow             │
 │  ├─ Interactive chat loop with /commands                        │
 │  └─ TUI/Classic mode selection                                  │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│                Workflow Layer (pkg/workflow)                    │
+│  Multi-Agent 工作流编排系统                                      │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │  Manager ─► Executors (并发) ─► Reviewers ─► Fixers         ││
+│  │                    │                                        ││
+│  │                Evaluator                                    ││
+│  └─────────────────────────────────────────────────────────────┘│
 └──────────────────────────┬──────────────────────────────────────┘
                            │
 ┌──────────────────────────▼──────────────────────────────────────┐
@@ -138,14 +148,15 @@
 
 ### 架构特点
 
-1. **分层设计**: CLI → Engine → Provider → Tool → Support Services
-2. **Provider 抽象**: 统一接口隔离具体实现,支持 8+ AI 提供商
-3. **工具注册表**: 动态工具注册,易于扩展,支持 MCP 外部工具
-4. **回调驱动**: Engine 通过回调与 UI 解耦
-5. **流式优先**: 所有 provider 支持流式响应
-6. **会话持久化**: 自动保存,支持恢复和压缩
-7. **权限系统**: 多级权限模式,细粒度控制
-8. **插件化**: 技能系统、钩子系统、MCP 集成
+1. **分层设计**: CLI → Workflow → Engine → Provider → Tool → Support Services
+2. **多智能体协作**: Manager、Executor、Reviewer、Fixer、Evaluator 角色分工
+3. **Provider 抽象**: 统一接口隔离具体实现,支持 8+ AI 提供商
+4. **工具注册表**: 动态工具注册,易于扩展,支持 MCP 外部工具
+5. **回调驱动**: Engine 通过回调与 UI 解耦
+6. **流式优先**: 所有 provider 支持流式响应
+7. **会话持久化**: 自动保存,支持恢复和压缩
+8. **权限系统**: 多级权限模式,细粒度控制
+9. **插件化**: 技能系统、钩子系统、MCP 集成
 
 ## 核心组件详解
 
@@ -375,7 +386,135 @@ func registerBuiltinTools(registry *tool.Registry) {
 6. **添加测试**: 创建对应的测试用例
 7. **更新文档**: 在工具列表中添加说明
 
-### 3. 引擎系统 (`pkg/engine/`)
+### 3. 多智能体工作流系统 (`pkg/workflow/`)
+
+工作流系统编排多个 AI 智能体协作完成复杂任务,支持自动规划、并发执行和质量审查。
+
+#### Agent 角色
+
+| 角色 | 职责 |
+|------|------|
+| **Manager** | 分析需求,创建带依赖关系的任务计划 |
+| **Executor** | 使用 Engine 执行单个任务 |
+| **Reviewer** | 审查执行质量,识别问题 |
+| **Fixer** | 自动修复审查中发现的小问题 |
+| **Evaluator** | 评估整体结果质量 |
+
+#### 工作流架构
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Workflow                                  │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                    Manager Agent                             ││
+│  │  - 分析需求                                                  ││
+│  │  - 创建带 DAG 依赖的任务计划                                 ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │              并发执行器池 (Executor Pool)                    ││
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       ││
+│  │  │Executor 1│ │Executor 2│ │Executor 3│ │Executor N│       ││
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────┘       ││
+│  │  (信号量控制并发,默认最大: 5)                                ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │              审查与修复循环                                   ││
+│  │  ┌──────────┐     ┌──────────┐                              ││
+│  │  │ Reviewer │ ──► │  Fixer   │  (如有小问题)                 ││
+│  │  └──────────┘     └──────────┘                              ││
+│  └─────────────────────────────────────────────────────────────┘│
+│                            │                                     │
+│                            ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                   Evaluator Agent                            ││
+│  │  - 对比需求与最终结果                                        ││
+│  │  - 生成质量评分和报告                                        ││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### 核心组件
+
+**任务计划与 DAG 依赖**
+```go
+type TaskPlan struct {
+    ID          string
+    Requirement string
+    Analysis    string
+    Tasks       []*Task
+}
+
+type Task struct {
+    ID           string
+    Title        string
+    Description  string
+    Dependencies []string  // DAG 边
+    Priority     int
+    Status       TaskStatus
+    Execution    *Execution
+    Reviews      []*Review
+}
+```
+
+**并发控制**
+- 基于信号量的执行器池(可配置最大工作数)
+- 资源锁定防止并发任务间的文件冲突
+- 基于 DAG 的依赖解析确保正确执行顺序
+
+**审查与重试循环**
+```
+执行任务
+     │
+     ▼
+   审查
+     │
+     ├─► 通过 ──────────► 完成
+     │
+     ├─► 小问题 ──► 自动修复 ──► 重新审查
+     │
+     └─► 严重问题 ──► 重试(最多 N 次) ──► 失败
+```
+
+#### 配置选项
+
+```go
+type WorkflowConfig struct {
+    MaxExecutors  int    // 默认: 5
+    MaxReviewers  int    // 默认: 2
+    MaxFixers     int    // 默认: 2
+    MaxRetries    int    // 默认: 3
+    EnableAutoFix bool   // 默认: true
+    Models        RoleModels
+}
+
+type RoleModels struct {
+    Default   string  // 未指定角色时使用
+    Manager   string
+    Executor  string
+    Reviewer  string
+    Fixer     string
+    Evaluator string
+}
+```
+
+#### CLI 使用示例
+
+```bash
+# 基本用法
+agentic-coder workflow "添加 JWT 用户认证"
+
+# 自定义并发数
+agentic-coder workflow --max-executors 10 "重构代码库"
+
+# 为不同角色指定模型
+agentic-coder workflow --model opus --executor-model sonnet "构建 REST API"
+```
+
+### 4. 引擎系统 (`pkg/engine/`)
 
 引擎是 agentic loop 的核心实现,协调用户输入、AI 响应和工具执行。主文件 loop.go 约 13KB。
 
@@ -519,7 +658,7 @@ func (pb *PromptBuilder) Build() string {
 }
 ```
 
-### 4. 会话管理 (`pkg/session/`)
+### 5. 会话管理 (`pkg/session/`)
 
 会话系统维护对话历史和上下文状态。核心代码约 544 行。
 
@@ -620,7 +759,7 @@ type ContentBlock struct {
 3. 保留关键的工具调用和结果
 4. 更新 token 估算
 
-### 5. 认证系统 (`pkg/auth/`)
+### 6. 认证系统 (`pkg/auth/`)
 
 认证系统管理多个 provider 的凭证。核心代码约 80 行。
 
@@ -692,7 +831,7 @@ func (m *Manager) ListCredentials() ([]*Credential, error)
 - API key 不会在日志或输出中显示
 - 支持通过环境变量覆盖 (`ANTHROPIC_API_KEY` 等)
 
-### 6. 成本追踪 (`pkg/cost/`)
+### 7. 成本追踪 (`pkg/cost/`)
 
 实时追踪 token 使用量和成本。
 
@@ -748,7 +887,7 @@ type Usage struct {
 # Estimated Cost: $0.086
 ```
 
-### 7. 代码审查 (`pkg/review/`)
+### 8. 代码审查 (`pkg/review/`)
 
 集成代码审查管道,自动检查代码质量。核心代码约 342 行。
 
@@ -818,7 +957,7 @@ type Config struct {
 /review
 ```
 
-### 8. 工作上下文管理 (`pkg/workctx/`)
+### 9. 工作上下文管理 (`pkg/workctx/`)
 
 当在 AI provider 之间切换时,工作上下文帮助维护任务连续性。核心代码约 442 行。
 
@@ -895,7 +1034,7 @@ type WorkContext struct {
 - Total: 58,120 tokens ($0.34)
 ```
 
-### 9. TUI 模式 (`pkg/tui/`)
+### 10. TUI 模式 (`pkg/tui/`)
 
 基于 Bubble Tea 的终端用户界面。核心代码约 1,850 行。
 
@@ -944,7 +1083,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd)
 func (m Model) View() string
 ```
 
-### 10. 权限系统 (`pkg/permission/`)
+### 11. 权限系统 (`pkg/permission/`)
 
 细粒度的工具权限控制系统。
 
@@ -990,7 +1129,7 @@ rules:
     paths: ["src/**/*.go"]
 ```
 
-### 11. 技能系统 (`pkg/skill/`)
+### 12. 技能系统 (`pkg/skill/`)
 
 用户自定义技能(Slash 命令)系统。核心代码约 468 行。
 
@@ -1041,7 +1180,7 @@ func LoadPluginSkills(pluginDir string) ([]*Skill, error)
 /review-pr 123
 ```
 
-### 12. 钩子系统 (`pkg/hook/`)
+### 13. 钩子系统 (`pkg/hook/`)
 
 生命周期钩子允许在关键时刻注入自定义逻辑。
 
@@ -1079,7 +1218,7 @@ hooks:
     command: "git add {{ .file_path }}"
 ```
 
-### 13. MCP 集成 (`pkg/mcp/`)
+### 14. MCP 集成 (`pkg/mcp/`)
 
 Model Context Protocol 支持外部工具生态系统。
 
@@ -1132,7 +1271,7 @@ func (m *MCPManager) RegisterTools(registry *tool.Registry) error {
 }
 ```
 
-### 14. Task 子系统 (`pkg/task/`)
+### 15. Task 子系统 (`pkg/task/`)
 
 子 Agent 任务创建和管理系统。核心代码约 439 行。
 
@@ -1181,7 +1320,7 @@ Task tool with run_in_background=true
 TaskOutput tool with task_id=<id>
 ```
 
-### 15. 存储抽象 (`pkg/storage/`)
+### 16. 存储抽象 (`pkg/storage/`)
 
 统一的存储抽象层,支持键值对存储。核心代码约 404 行。
 
@@ -2195,17 +2334,18 @@ MIT License - 详见项目 LICENSE 文件
 
 ### 长期规划
 
-1. **多智能体系统**: Agent 编排和协作
+1. ~~**多智能体系统**: Agent 编排和协作~~ ✅ 已在 v0.2.0 实现
 2. **IDE 集成**: VS Code、JetBrains 插件
 3. **Web UI**: 基于 Web 的用户界面
 4. **云服务**: 托管版本和团队协作
+5. **高级工作流特性**: 动态重规划、任务间通信
 
 ## 维护者
 
 - **项目创建者**: @xinguang
-- **当前版本**: v0.1.0
+- **当前版本**: v0.2.0
 - **最后更新**: 2025-02-05
-- **文档版本**: v1.1.0
+- **文档版本**: v1.2.0
 
 ---
 
