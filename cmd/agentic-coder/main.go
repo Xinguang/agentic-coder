@@ -67,6 +67,7 @@ write, edit, and understand code using natural language.`,
 	rootCmd.PersistentFlags().Bool("review-security", false, "Check for security issues")
 	rootCmd.PersistentFlags().Bool("review-style", false, "Check code style")
 	rootCmd.PersistentFlags().Bool("review-incremental", false, "Enable incremental review (only review changed code)")
+	rootCmd.PersistentFlags().String("thinking", "medium", "Thinking level: high, medium, low, none")
 
 	// Subcommands
 	rootCmd.AddCommand(versionCmd())
@@ -472,6 +473,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Create work context manager
 	workMgr := workctx.NewManager("")
 
+	// Get thinking level
+	thinkingLevel, _ := cmd.Flags().GetString("thinking")
+
 	// Create engine
 	eng := engine.NewEngine(&engine.EngineOptions{
 		Provider:      prov,
@@ -480,6 +484,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		MaxIterations: 100,
 		MaxTokens:     16384,
 		SystemPrompt:  getSystemPrompt(),
+		ThinkingLevel: thinkingLevel,
 	})
 
 	// Check for --no-tui flag
