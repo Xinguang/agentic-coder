@@ -211,21 +211,41 @@ func (r *SimpleRunner) runEngine(input string) string {
 	// Full response for review and markdown rendering
 	var fullResponse strings.Builder
 	var textBuffer strings.Builder // Buffer for markdown text only
+	hasOutput := false             // Track if we've received any output
+
+	// Show waiting indicator
+	fmt.Fprintf(os.Stdout, "%s💭 Thinking...%s", ansiDim, ansiReset)
 
 	// Set up callbacks
 	r.engine.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
+			// Clear thinking indicator on first output
+			if !hasOutput {
+				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
+				hasOutput = true
+			}
 			// Accumulate text for markdown rendering
 			textBuffer.WriteString(text)
 			fullResponse.WriteString(text)
 		},
 		OnThinking: func(text string) {
+			// Clear thinking indicator on first output
+			if !hasOutput {
+				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
+				fmt.Fprintf(os.Stdout, "%s💭 %s", ansiDim, ansiReset)
+				hasOutput = true
+			}
 			// Flush any pending text before showing thinking
 			r.flushMarkdown(&textBuffer)
 			// Show thinking in dim color
 			fmt.Fprintf(os.Stdout, "%s%s%s", ansiDim, text, ansiReset)
 		},
 		OnToolUse: func(name string, params map[string]interface{}) {
+			// Clear thinking indicator on first output
+			if !hasOutput {
+				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
+				hasOutput = true
+			}
 			// Flush any pending text before showing tool use
 			r.flushMarkdown(&textBuffer)
 			r.printToolUse(name, params)
