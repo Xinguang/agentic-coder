@@ -4,13 +4,24 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 )
+
+// Debug logging to stderr (won't interfere with TUI)
+var debugMode = os.Getenv("DEBUG") != ""
+
+func debugLog(format string, args ...interface{}) {
+	if debugMode {
+		fmt.Fprintf(os.Stderr, "[DEBUG] "+format+"\n", args...)
+	}
+}
 
 // AppRunner wraps the bubbletea app with engine integration
 type AppRunner struct {
@@ -108,16 +119,23 @@ func (r *AppRunner) runEngine(input string) {
 		OnToolUse: func(name string, params map[string]interface{}) {
 			r.toolCount++
 			r.currentTool = name
-			r.program.Send(statusMsg{text: fmt.Sprintf("Tool #%d: %s", r.toolCount, name), isWorking: true})
+			debugLog("OnToolUse: %s (#%d)", name, r.toolCount)
+			// Send status and content updates
+			r.program.Send(statusMsg{text: fmt.Sprintf("Tool #%d: %s ⏳", r.toolCount, name), isWorking: true})
 			r.program.Send(contentMsg{content: r.formatToolUse(name, params)})
+			// Force a small delay to allow UI to render
+			time.Sleep(10 * time.Millisecond)
 		},
 		OnToolResult: func(name string, result *tool.Output) {
 			status := "✓"
 			if result.IsError {
 				status = "✗"
 			}
+			debugLog("OnToolResult: %s %s", name, status)
 			r.program.Send(statusMsg{text: fmt.Sprintf("Tool #%d: %s %s", r.toolCount, name, status), isWorking: true})
 			r.program.Send(contentMsg{content: r.formatToolResult(name, result)})
+			// Force a small delay to allow UI to render
+			time.Sleep(10 * time.Millisecond)
 		},
 		OnUsage: func(inputTokens, outputTokens int) {
 			r.inputTokens += inputTokens

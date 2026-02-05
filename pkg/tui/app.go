@@ -3,6 +3,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -172,6 +173,10 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.tickCmd()
 
 	case contentMsg:
+		// Debug: log message receipt
+		if os.Getenv("DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[DEBUG] contentMsg received: %d bytes\n", len(msg.content))
+		}
 		if msg.isError {
 			m.content.WriteString(fmt.Sprintf("\n\033[31m%s\033[0m\n", msg.content))
 		} else {
