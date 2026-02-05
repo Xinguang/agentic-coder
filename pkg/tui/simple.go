@@ -33,6 +33,77 @@ func init() {
 	}
 }
 
+// Spinner frames for loading animation
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+// StatusSpinner shows animated status
+type StatusSpinner struct {
+	message  string
+	running  bool
+	stopChan chan struct{}
+	mu       sync.Mutex
+}
+
+// NewStatusSpinner creates a new spinner
+func NewStatusSpinner() *StatusSpinner {
+	return &StatusSpinner{
+		stopChan: make(chan struct{}),
+	}
+}
+
+// Start begins the spinner with a message
+func (s *StatusSpinner) Start(message string) {
+	s.mu.Lock()
+	if s.running {
+		s.mu.Unlock()
+		s.Update(message)
+		return
+	}
+	s.message = message
+	s.running = true
+	s.stopChan = make(chan struct{})
+	s.mu.Unlock()
+
+	go func() {
+		frame := 0
+		ticker := time.NewTicker(80 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-s.stopChan:
+				return
+			case <-ticker.C:
+				s.mu.Lock()
+				msg := s.message
+				s.mu.Unlock()
+				fmt.Fprintf(os.Stdout, "\r%s%s %s%s", ansiCyan, spinnerFrames[frame], msg, ansiReset)
+				frame = (frame + 1) % len(spinnerFrames)
+			}
+		}
+	}()
+}
+
+// Update changes the spinner message
+func (s *StatusSpinner) Update(message string) {
+	s.mu.Lock()
+	s.message = message
+	s.mu.Unlock()
+}
+
+// Stop stops the spinner and clears the line
+func (s *StatusSpinner) Stop() {
+	s.mu.Lock()
+	if !s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.running = false
+	close(s.stopChan)
+	s.mu.Unlock()
+	fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
+}
+
 // SimpleRunner runs without bubbletea for cleaner output
 type SimpleRunner struct {
 	engine        *engine.Engine
@@ -51,6 +122,9 @@ type SimpleRunner struct {
 	outputTokens int
 	totalCost    float64
 
+	// Status spinner
+	spinner *StatusSpinner
+
 	// Cancellation
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -64,8 +138,9 @@ func NewSimpleRunner(eng *engine.Engine, cfg Config) *SimpleRunner {
 		cfg.MaxReviewCycles = 5
 	}
 	return &SimpleRunner{
-		engine: eng,
-		config: cfg,
+		engine:  eng,
+		config:  cfg,
+		spinner: NewStatusSpinner(),
 	}
 }
 
@@ -211,41 +286,27 @@ func (r *SimpleRunner) runEngine(input string) string {
 	// Full response for review and markdown rendering
 	var fullResponse strings.Builder
 	var textBuffer strings.Builder // Buffer for markdown text only
-	hasOutput := false             // Track if we've received any output
 
-	// Show waiting indicator
-	fmt.Fprintf(os.Stdout, "%s💭 Thinking...%s", ansiDim, ansiReset)
+	// Start spinner
+	r.spinner.Start("Thinking...")
 
 	// Set up callbacks
 	r.engine.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
-			// Clear thinking indicator on first output
-			if !hasOutput {
-				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
-				hasOutput = true
-			}
+			// Stop spinner on first text output
+			r.spinner.Stop()
 			// Accumulate text for markdown rendering
 			textBuffer.WriteString(text)
 			fullResponse.WriteString(text)
 		},
 		OnThinking: func(text string) {
-			// Clear thinking indicator on first output
-			if !hasOutput {
-				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
-				fmt.Fprintf(os.Stdout, "%s💭 %s", ansiDim, ansiReset)
-				hasOutput = true
-			}
-			// Flush any pending text before showing thinking
-			r.flushMarkdown(&textBuffer)
-			// Show thinking in dim color
-			fmt.Fprintf(os.Stdout, "%s%s%s", ansiDim, text, ansiReset)
+			// Update spinner to show thinking, then stop and show content
+			r.spinner.Stop()
+			fmt.Fprintf(os.Stdout, "%s💭 %s%s", ansiDim, text, ansiReset)
 		},
 		OnToolUse: func(name string, params map[string]interface{}) {
-			// Clear thinking indicator on first output
-			if !hasOutput {
-				fmt.Fprint(os.Stdout, "\r\033[K") // Clear line
-				hasOutput = true
-			}
+			// Stop spinner before tool output
+			r.spinner.Stop()
 			// Flush any pending text before showing tool use
 			r.flushMarkdown(&textBuffer)
 			r.printToolUse(name, params)
@@ -354,7 +415,9 @@ func (r *SimpleRunner) runReviewCycle(originalRequest, response string) {
 	}
 
 	for cycle := 1; cycle <= maxCycles; cycle++ {
-		fmt.Fprintf(os.Stdout, "\n%s🔍 Reviewing response (cycle %d/%d)...%s\n", ansiDim, cycle, maxCycles, ansiReset)
+		// Show review spinner
+		fmt.Println() // New line before spinner
+		r.spinner.Start(fmt.Sprintf("Reviewing... (cycle %d/%d)", cycle, maxCycles))
 
 		// Run pipeline if available, otherwise use standard reviewer
 		var result *review.ReviewResult
@@ -381,8 +444,11 @@ func (r *SimpleRunner) runReviewCycle(originalRequest, response string) {
 		}
 		durationMs := timeNow().Sub(startTime).Milliseconds()
 
+		// Stop spinner
+		r.spinner.Stop()
+
 		if err != nil {
-			fmt.Fprintf(os.Stdout, "%sReview error: %v%s\n", ansiRed, err, ansiReset)
+			fmt.Fprintf(os.Stdout, "%s✗ Review error: %v%s\n", ansiRed, err, ansiReset)
 			return
 		}
 
