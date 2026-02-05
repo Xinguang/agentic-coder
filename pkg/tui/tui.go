@@ -101,7 +101,8 @@ type Todo struct {
 
 // SessionInfo holds session metadata for display
 type SessionInfo struct {
-	ID           string
+	ID           string // Full UUID for lookup
+	ShortID      string // Display ID (first 8 chars)
 	Summary      string
 	MessageCount int
 	UpdatedAt    string
@@ -112,6 +113,9 @@ type SessionInfo struct {
 type ListSessionsCallback func() []SessionInfo
 type ResumeSessionCallback func(id string) (messageCount int, err error)
 type NewSessionCallback func() (sessionID string, err error)
+
+// SaveSessionCallback is called to save the session
+type SaveSessionCallback func() error
 
 // Config holds TUI configuration
 type Config struct {
@@ -126,6 +130,7 @@ type Config struct {
 	OnListSessions  ListSessionsCallback
 	OnResumeSession ResumeSessionCallback
 	OnNewSession    NewSessionCallback
+	OnSaveSession   SaveSessionCallback
 }
 
 // New creates a new TUI model
@@ -540,7 +545,12 @@ func (m *Model) listSessions() {
 		if title == "" {
 			title = "(untitled)"
 		}
-		fmt.Fprintf(os.Stdout, "%s%d. %s", marker, i+1, title)
+		displayID := s.ShortID
+		if displayID == "" {
+			displayID = s.ID
+		}
+		fmt.Fprintf(os.Stdout, "%s%d. %s%s %s", marker, i+1, ansiDim, displayID, ansiReset)
+		fmt.Fprintf(os.Stdout, " %s", title)
 		fmt.Fprintf(os.Stdout, "%s (%d msgs, %s)%s\n", ansiDim, s.MessageCount, s.UpdatedAt, ansiReset)
 	}
 	fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n", ansiDim, ansiReset)

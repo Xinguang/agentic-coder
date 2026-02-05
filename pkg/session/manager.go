@@ -67,6 +67,11 @@ func (m *SessionManager) NewSession(opts *SessionOptions) (*Session, error) {
 	sess := NewSession(opts)
 	m.activeSess[sess.ID] = sess
 
+	// Save to disk immediately so it appears in history
+	if err := m.storage.Save(sess); err != nil {
+		return nil, err
+	}
+
 	return sess, nil
 }
 
@@ -178,11 +183,17 @@ func (s *FileStorage) Save(sess *Session) error {
 	sess.mu.RLock()
 	defer sess.mu.RUnlock()
 
+	// Auto-generate title from first user message if empty
+	title := sess.Title
+	if title == "" && len(sess.Messages) > 0 {
+		title = extractTitleFromMessages(sess.Messages)
+	}
+
 	// Save session metadata
 	metaPath := filepath.Join(s.projectDir, sess.ID+".meta.json")
 	meta := SessionInfo{
 		ID:           sess.ID,
-		Title:        sess.Title,
+		Title:        title,
 		ProjectPath:  sess.ProjectPath,
 		Model:        sess.Model,
 		MessageCount: len(sess.Messages),
@@ -191,6 +202,11 @@ func (s *FileStorage) Save(sess *Session) error {
 	if len(sess.Messages) > 0 {
 		meta.Created = sess.Messages[0].Timestamp
 		meta.LastUpdated = sess.Messages[len(sess.Messages)-1].Timestamp
+	} else {
+		// For new sessions with no messages, use current time
+		now := time.Now()
+		meta.Created = now
+		meta.LastUpdated = now
 	}
 
 	metaData, err := json.MarshalIndent(meta, "", "  ")
@@ -317,6 +333,28 @@ type rawEntry struct {
 			Text string `json:"text"`
 		} `json:"content"`
 	} `json:"message"`
+}
+
+// extractTitleFromMessages extracts title from messages in memory
+func extractTitleFromMessages(messages []*TranscriptEntry) string {
+	for _, entry := range messages {
+		if entry.Type == "user" && entry.Message != nil {
+			for _, block := range entry.Message.Content {
+				if string(block.Type()) == "text" {
+					// Use JSON marshaling to extract text
+					if data, err := block.MarshalJSON(); err == nil {
+						var textBlock struct {
+							Text string `json:"text"`
+						}
+						if json.Unmarshal(data, &textBlock) == nil && textBlock.Text != "" {
+							return truncateTitle(textBlock.Text, 50)
+						}
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // extractTitleFromSession reads the first user message and generates a title

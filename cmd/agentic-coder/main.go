@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -496,14 +497,24 @@ func runChat(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return nil
 				}
+				// Sort by last updated (newest first)
+				sort.Slice(sessions, func(i, j int) bool {
+					return sessions[i].LastUpdated.After(sessions[j].LastUpdated)
+				})
+
 				result := make([]tui.SessionInfo, 0, len(sessions))
 				for _, s := range sessions {
 					title := s.Title
 					if title == "" {
 						title = "(untitled)"
 					}
+					shortID := s.ID
+					if len(shortID) > 8 {
+						shortID = shortID[:8]
+					}
 					result = append(result, tui.SessionInfo{
-						ID:           s.ID[:8], // Short ID for display
+						ID:           s.ID, // Full ID for lookup
+						ShortID:      shortID,
 						Summary:      title,
 						MessageCount: s.MessageCount,
 						UpdatedAt:    s.LastUpdated.Format("01/02 15:04"),
@@ -535,6 +546,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 				currentSess = newSess
 				eng.SetSession(newSess)
 				return newSess.ID, nil
+			},
+			OnSaveSession: func() error {
+				return sessMgr.SaveSession(currentSess)
 			},
 		})
 		return runner.Run()

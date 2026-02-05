@@ -46,10 +46,12 @@ func (r *SimpleRunner) Run() error {
 
 	for {
 		fmt.Print("> ")
+		os.Stdout.Sync() // Flush to ensure prompt is visible
 
 		input, err := reader.ReadString('\n')
 		if err != nil {
-			return nil // EOF, exit gracefully
+			// EOF means stdin closed (Ctrl+D)
+			return nil
 		}
 
 		input = strings.TrimSpace(input)
@@ -76,7 +78,12 @@ func (r *SimpleRunner) Run() error {
 		// Regular message
 		fmt.Println()
 		r.runEngine(input)
-		fmt.Println()
+		fmt.Print("\n\n") // Ensure newline after response
+
+		// Save session after each message
+		if r.config.OnSaveSession != nil {
+			r.config.OnSaveSession()
+		}
 	}
 }
 
@@ -98,6 +105,13 @@ func (r *SimpleRunner) printWelcome() {
 }
 
 func (r *SimpleRunner) runEngine(input string) {
+	// Recover from panics
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Fprintf(os.Stdout, "\n%sRecovered from panic: %v%s\n", ansiRed, err, ansiReset)
+		}
+	}()
+
 	r.mu.Lock()
 	r.ctx, r.cancel = context.WithCancel(context.Background())
 	ctx := r.ctx
@@ -293,7 +307,12 @@ func (r *SimpleRunner) listSessions() {
 		if title == "" {
 			title = "(untitled)"
 		}
-		fmt.Fprintf(os.Stdout, "%s%d. %s", marker, i+1, title)
+		displayID := s.ShortID
+		if displayID == "" {
+			displayID = s.ID
+		}
+		fmt.Fprintf(os.Stdout, "%s%d. %s%s %s", marker, i+1, ansiDim, displayID, ansiReset)
+		fmt.Fprintf(os.Stdout, " %s", title)
 		fmt.Fprintf(os.Stdout, "%s (%d msgs, %s)%s\n", ansiDim, s.MessageCount, s.UpdatedAt, ansiReset)
 	}
 	fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n", ansiDim, ansiReset)
