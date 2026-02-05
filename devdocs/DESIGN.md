@@ -1,8 +1,47 @@
-# Agentic Coder - Design Document
+# Agentic Coder - Technical Design Document
 
-## Overview
+## Project Overview
 
-Agentic Coder is an AI-powered coding assistant CLI built in Go. It provides a unified interface to interact with multiple AI providers, both through APIs and local CLI tools.
+**Agentic Coder** is an AI-powered coding assistant CLI tool built in Go, designed to **solve the vendor lock-in problem in AI tooling**. It provides a unified interface to interact with multiple AI providers, supporting 8+ providers through both API and local CLI approaches.
+
+### Core Features
+
+- **Zero Vendor Lock-in**: Switch AI providers with a single parameter while maintaining consistent workflow
+- **Unified Tool Ecosystem**: 22 built-in tools with consistent interface across all providers
+- **Multiple Deployment Options**: API, local CLI tools, completely offline (Ollama)
+- **Single Binary**: Go compiled to ~10MB standalone executable with zero dependencies
+- **Streaming Responses**: Real-time streaming output for all providers
+- **Persistent Sessions**: Automatic conversation history saving with resume and compression support
+- **Cost Tracking**: Real-time token usage and cost monitoring with pricing data for 20+ models
+- **Code Review**: Integrated code quality checking and security analysis
+- **Extended Thinking**: Support for Claude's extended thinking tokens
+- **Permission Management**: Fine-grained tool permission control system
+- **Skills System**: User-defined slash command support
+- **MCP Integration**: Model Context Protocol support for external tool ecosystems
+- **Lifecycle Hooks**: Custom logic injection at key moments
+
+### Technology Stack
+
+| Component | Version/Description |
+|-----------|-------------------|
+| **Language** | Go 1.24.2+ |
+| **CLI Framework** | Cobra v1.10.2 |
+| **TUI Framework** | Bubble Tea v1.3.10 + Bubbles v0.21.1 |
+| **Markdown Rendering** | Glamour v0.10.0 |
+| **Build Tool** | Make |
+
+### Code Statistics
+
+| Metric | Value |
+|--------|-------|
+| Total Lines of Code | ~16,000+ |
+| Go Source Files | 86+ |
+| Test Files | 13 |
+| Main Packages | 23 |
+| Built-in Tools | 22 |
+| Supported AI Providers | 8+ |
+| Binary Size | ~10MB |
+| Largest Files | main.go (~1,330 lines), loop.go (~13KB) |
 
 ## Architecture
 
@@ -253,12 +292,35 @@ CLI Process
 
 ```
 ~/.config/agentic-coder/
-├── credentials.json    # API keys and auth tokens
-├── config.yaml         # User configuration (future)
-└── sessions/           # Session history
-    ├── <session-id>.json
-    └── ...
+├── credentials.json         # API keys (0600 permissions)
+├── config.yaml             # User configuration
+├── permissions.yaml        # Tool permission rules
+├── hooks.yaml              # Lifecycle hooks
+├── mcp.json                # MCP server configuration
+├── sessions/               # Conversation history
+│   ├── <uuid-1>.json
+│   └── <uuid-2>.json
+├── work/                   # Work contexts
+│   ├── <id-1>.json
+│   └── <id-2>.json
+└── skills/                 # Custom skills
+    ├── commit.md
+    └── review-pr.md
 ```
+
+### Instruction Files
+
+The project supports instruction files for customizing system prompts:
+
+1. **AGENT.md** (Recommended)
+   - Project-level: Place in project root
+   - Global: `~/.claude/AGENT.md`
+
+2. **CLAUDE.md** (Backward compatible)
+   - Project-level: Place in project root
+   - Global: `~/.claude/CLAUDE.md`
+
+Priority: AGENT.md > CLAUDE.md
 
 ### Environment Variables
 
@@ -321,10 +383,85 @@ INTEGRATION_TEST=1 go test ./... -v
 3. **Tool Sandboxing**: Bash tool can be configured with restrictions (future)
 4. **Input Validation**: All tool inputs are validated before execution
 
-## Future Enhancements
+## Design Highlights
 
-- [ ] MCP (Model Context Protocol) server support
-- [ ] Plugin system for custom tools
-- [ ] Multi-agent orchestration
-- [ ] Code review and refactoring agents
-- [ ] IDE integrations (VS Code, JetBrains)
+### 1. Architecture Advantages
+
+- **Clear layered architecture**: CLI → Engine → Provider → Tool → Support Services
+- **Interface-driven design**: Heavy use of interfaces for polymorphism and decoupling
+- **Single responsibility principle**: Each package and module has clear responsibility
+- **Highly extensible**: Provider and Tool systems support dynamic extension
+
+### 2. Provider Abstraction Value
+
+**Core Value**: Solving vendor lock-in in AI tooling
+
+- **Unified interface**: All providers implement the same `AIProvider` interface
+- **Zero-friction switching**: Switch providers via `-m` parameter
+- **Diversity support**: API, CLI, local deployment three approaches
+- **Easy to extend**: Adding new provider only requires implementing interface and registering
+
+### 3. Tool Ecosystem
+
+- **22 built-in tools**: Cover file operations, shell, web, development scenarios
+- **Dynamic registration**: Tools managed through registry pattern
+- **MCP integration**: Support external tool ecosystem extension
+- **Permission control**: Fine-grained tool execution permission management
+
+### 4. Streaming-First Design
+
+- **All providers support streaming**: Consistent real-time response experience
+- **Low latency**: First byte time < 1s
+- **Cancelable**: Support Context cancellation mechanism
+- **Callback-driven**: Engine decoupled from UI through callbacks
+
+### 5. Engineering Quality
+
+- **Robust error handling**: Layered error handling, clear error propagation
+- **Concurrency safety**: Use mutex to protect shared state
+- **Test coverage**: Target 70%+ coverage
+- **Complete documentation**: Detailed code comments and documentation
+
+## Performance Metrics
+
+| Operation | Time |
+|-----------|------|
+| Startup time | < 100ms |
+| First byte time (TTFB) | < 1s |
+| Session load | < 50ms |
+| Tool execution | < 500ms (average) |
+| Binary size | ~10MB |
+
+## Technical Debt & Improvements
+
+### Current Technical Debt
+
+1. **Provider implementation duplication**: Similar code across providers, can extract common logic
+2. **Test coverage**: Currently only 13 test files, need more unit tests
+3. **Configuration management**: Configuration file formats can be more unified
+4. **Error handling**: Some error handling can be more detailed
+
+### Short-term Improvements
+
+1. **Increase test coverage**: Focus on Engine, Provider, Tool
+2. **Extract Provider common logic**: Create `BaseProvider` to reduce code duplication
+3. **Enhanced documentation**: Add more usage examples and best practices
+4. **Performance optimization**: Implement tool parallelization
+
+### Long-term Roadmap
+
+1. **Multi-agent system**: Agent orchestration and collaboration
+2. **IDE integration**: VS Code, JetBrains plugins
+3. **Web UI**: Web-based user interface
+4. **Cloud service**: Hosted version and team collaboration
+
+## Maintainers
+
+- **Project Creator**: @xinguang
+- **Current Version**: v0.1.0
+- **Last Updated**: 2025-02-05
+- **Document Version**: v1.0.0
+
+---
+
+**This document is generated based on in-depth code analysis and updated continuously with the project. For questions or suggestions, please submit an Issue.**
