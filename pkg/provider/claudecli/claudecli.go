@@ -157,11 +157,24 @@ type streamReader struct {
 	done     bool
 	started  bool
 	lastText string // Track sent text to calculate delta
+
+	// Event queue for handling multiple events per line
+	eventQueue []provider.StreamingEvent
+
+	// Track tool use for correlating results
+	lastToolName string
 }
 
 func (r *streamReader) Recv() (provider.StreamingEvent, error) {
 	if r.done {
 		return nil, io.EOF
+	}
+
+	// Return queued events first
+	if len(r.eventQueue) > 0 {
+		event := r.eventQueue[0]
+		r.eventQueue = r.eventQueue[1:]
+		return event, nil
 	}
 
 	// Send MessageStartEvent first
@@ -189,21 +202,59 @@ func (r *streamReader) Recv() (provider.StreamingEvent, error) {
 
 		switch event.Type {
 		case "assistant":
-			// Extract text from message content (accumulated)
+			// Process all content blocks
 			for _, block := range event.Message.Content {
-				if block.Type == "text" && block.Text != "" {
-					// Calculate delta (new text since last)
-					fullText := block.Text
-					if len(fullText) > len(r.lastText) {
-						delta := fullText[len(r.lastText):]
-						r.lastText = fullText
-						return &provider.ContentBlockDeltaEvent{
-							Index: 0,
-							Delta: &provider.TextDelta{Text: delta},
-						}, nil
+				switch block.Type {
+				case "text":
+					if block.Text != "" {
+						// Calculate delta (new text since last)
+						fullText := block.Text
+						if len(fullText) > len(r.lastText) {
+							delta := fullText[len(r.lastText):]
+							r.lastText = fullText
+							r.eventQueue = append(r.eventQueue, &provider.ContentBlockDeltaEvent{
+								Index: 0,
+								Delta: &provider.TextDelta{Text: delta},
+							})
+						}
 					}
+				case "tool_use":
+					// Tool use event - emit ToolInfoEvent
+					r.lastToolName = block.Name
+					r.eventQueue = append(r.eventQueue, &provider.ToolInfoEvent{
+						ID:    block.ID,
+						Name:  block.Name,
+						Input: block.Input,
+					})
 				}
 			}
+			// Return first event from queue
+			if len(r.eventQueue) > 0 {
+				ev := r.eventQueue[0]
+				r.eventQueue = r.eventQueue[1:]
+				return ev, nil
+			}
+
+		case "user":
+			// User messages contain tool results
+			for _, block := range event.Message.Content {
+				if block.Type == "tool_result" {
+					// Tool result event
+					r.eventQueue = append(r.eventQueue, &provider.ToolResultInfoEvent{
+						ToolUseID: block.ToolUseID,
+						Name:      r.lastToolName,
+						Content:   block.Content,
+						IsError:   block.IsError,
+					})
+				}
+			}
+			// Return first event from queue
+			if len(r.eventQueue) > 0 {
+				ev := r.eventQueue[0]
+				r.eventQueue = r.eventQueue[1:]
+				return ev, nil
+			}
+
 		case "result":
 			// Final result - stream complete
 			r.done = true
@@ -230,9 +281,21 @@ type cliEvent struct {
 	Subtype string `json:"subtype"`
 	Message struct {
 		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
+			Type   string                 `json:"type"`
+			Text   string                 `json:"text,omitempty"`
+			ID     string                 `json:"id,omitempty"`
+			Name   string                 `json:"name,omitempty"`
+			Input  map[string]interface{} `json:"input,omitempty"`
+			// For tool_result
+			ToolUseID string `json:"tool_use_id,omitempty"`
+			Content   string `json:"content,omitempty"`
+			IsError   bool   `json:"is_error,omitempty"`
 		} `json:"content"`
 	} `json:"message"`
+	ToolUseResult struct {
+		Stdout      string `json:"stdout,omitempty"`
+		Stderr      string `json:"stderr,omitempty"`
+		Interrupted bool   `json:"interrupted,omitempty"`
+	} `json:"tool_use_result,omitempty"`
 	Result string `json:"result"`
 }
