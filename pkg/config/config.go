@@ -466,6 +466,257 @@ func (c *Config) SetAPIKey(provider, key string) {
 	c.APIKeys[provider] = key
 }
 
+// ValidationError represents a configuration validation error
+type ValidationError struct {
+	Field   string
+	Value   interface{}
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	return fmt.Sprintf("config validation error: %s - %s (value: %v)", e.Field, e.Message, e.Value)
+}
+
+// ValidationResult contains all validation errors
+type ValidationResult struct {
+	Errors   []ValidationError
+	Warnings []ValidationError
+}
+
+// IsValid returns true if there are no errors
+func (r *ValidationResult) IsValid() bool {
+	return len(r.Errors) == 0
+}
+
+// HasWarnings returns true if there are warnings
+func (r *ValidationResult) HasWarnings() bool {
+	return len(r.Warnings) > 0
+}
+
+// Validate validates the configuration and returns validation results
+func (c *Config) Validate() *ValidationResult {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	result := &ValidationResult{
+		Errors:   make([]ValidationError, 0),
+		Warnings: make([]ValidationError, 0),
+	}
+
+	// Validate model
+	validModels := map[string]bool{
+		"sonnet": true, "opus": true, "haiku": true,
+		"gpt-4o": true, "gpt-4o-mini": true, "o1": true, "o1-mini": true, "o3-mini": true,
+		"gemini": true, "gemini-2.0-flash": true, "gemini-1.5-pro": true,
+		"deepseek": true, "deepseek-chat": true, "deepseek-reasoner": true,
+		"llama": true, "qwen": true, "codex": true,
+		"geminicli": true, "claudecli": true, "codexcli": true,
+	}
+	if c.DefaultModel != "" && !validModels[c.DefaultModel] {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "default_model",
+			Value:   c.DefaultModel,
+			Message: "unknown model, may not be supported",
+		})
+	}
+
+	// Validate max_tokens
+	if c.MaxTokens < 0 {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "max_tokens",
+			Value:   c.MaxTokens,
+			Message: "must be non-negative",
+		})
+	}
+	if c.MaxTokens > 1000000 {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "max_tokens",
+			Value:   c.MaxTokens,
+			Message: "very large value, may exceed model limits",
+		})
+	}
+
+	// Validate temperature
+	if c.Temperature < 0 || c.Temperature > 2 {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "temperature",
+			Value:   c.Temperature,
+			Message: "must be between 0 and 2",
+		})
+	}
+
+	// Validate thinking_level
+	validThinkingLevels := map[string]bool{
+		"high": true, "medium": true, "low": true, "none": true, "": true,
+	}
+	if !validThinkingLevels[c.ThinkingLevel] {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "thinking_level",
+			Value:   c.ThinkingLevel,
+			Message: "must be one of: high, medium, low, none",
+		})
+	}
+
+	// Validate max_iterations
+	if c.MaxIterations < 0 {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "max_iterations",
+			Value:   c.MaxIterations,
+			Message: "must be non-negative",
+		})
+	}
+	if c.MaxIterations > 1000 {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "max_iterations",
+			Value:   c.MaxIterations,
+			Message: "very large value, may cause long-running sessions",
+		})
+	}
+
+	// Validate compact_percent
+	if c.CompactPercent < 0 || c.CompactPercent > 1 {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "compact_percent",
+			Value:   c.CompactPercent,
+			Message: "must be between 0 and 1",
+		})
+	}
+
+	// Validate permission_mode
+	validPermissionModes := map[string]bool{
+		"default": true, "plan": true, "accept_edits": true, "dont_ask": true, "bypass": true, "": true,
+	}
+	if !validPermissionModes[c.PermissionMode] {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "permission_mode",
+			Value:   c.PermissionMode,
+			Message: "must be one of: default, plan, accept_edits, dont_ask, bypass",
+		})
+	}
+
+	// Validate log_level
+	validLogLevels := map[string]bool{
+		"debug": true, "info": true, "warn": true, "error": true, "": true,
+	}
+	if !validLogLevels[c.LogLevel] {
+		result.Errors = append(result.Errors, ValidationError{
+			Field:   "log_level",
+			Value:   c.LogLevel,
+			Message: "must be one of: debug, info, warn, error",
+		})
+	}
+
+	// Validate theme
+	validThemes := map[string]bool{
+		"dark": true, "light": true, "": true,
+	}
+	if !validThemes[c.Theme] {
+		result.Warnings = append(result.Warnings, ValidationError{
+			Field:   "theme",
+			Value:   c.Theme,
+			Message: "unknown theme, using default",
+		})
+	}
+
+	// Validate hooks
+	validHookEvents := map[string]bool{
+		"PreToolUse": true, "PostToolUse": true, "Stop": true,
+		"SubagentStop": true, "SessionStart": true, "SessionEnd": true,
+		"UserPromptSubmit": true, "PreCompact": true, "Notification": true,
+	}
+	for i, hook := range c.Hooks {
+		if hook.Event == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("hooks[%d].event", i),
+				Value:   hook.Event,
+				Message: "event is required",
+			})
+		} else if !validHookEvents[hook.Event] {
+			result.Warnings = append(result.Warnings, ValidationError{
+				Field:   fmt.Sprintf("hooks[%d].event", i),
+				Value:   hook.Event,
+				Message: "unknown hook event",
+			})
+		}
+		if hook.Command == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("hooks[%d].command", i),
+				Value:   hook.Command,
+				Message: "command is required",
+			})
+		}
+	}
+
+	// Validate MCP servers
+	validMCPTypes := map[string]bool{
+		"stdio": true, "sse": true, "http": true, "": true,
+	}
+	for i, server := range c.MCPServers {
+		if server.Name == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("mcp_servers[%d].name", i),
+				Value:   server.Name,
+				Message: "name is required",
+			})
+		}
+		if !validMCPTypes[server.Type] {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("mcp_servers[%d].type", i),
+				Value:   server.Type,
+				Message: "must be one of: stdio, sse, http",
+			})
+		}
+		if server.Type == "stdio" && server.Command == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("mcp_servers[%d].command", i),
+				Value:   server.Command,
+				Message: "command is required for stdio type",
+			})
+		}
+		if (server.Type == "sse" || server.Type == "http") && server.URL == "" {
+			result.Errors = append(result.Errors, ValidationError{
+				Field:   fmt.Sprintf("mcp_servers[%d].url", i),
+				Value:   server.URL,
+				Message: "url is required for sse/http type",
+			})
+		}
+	}
+
+	// Validate plugin paths exist
+	for i, path := range c.PluginPaths {
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			result.Warnings = append(result.Warnings, ValidationError{
+				Field:   fmt.Sprintf("plugin_paths[%d]", i),
+				Value:   path,
+				Message: "path does not exist",
+			})
+		}
+	}
+
+	return result
+}
+
+// ValidateAndPrint validates and prints errors/warnings
+func (c *Config) ValidateAndPrint() bool {
+	result := c.Validate()
+
+	if len(result.Errors) > 0 {
+		fmt.Fprintf(os.Stderr, "Configuration errors:\n")
+		for _, err := range result.Errors {
+			fmt.Fprintf(os.Stderr, "  ✗ %s: %s (value: %v)\n", err.Field, err.Message, err.Value)
+		}
+	}
+
+	if len(result.Warnings) > 0 {
+		fmt.Fprintf(os.Stderr, "Configuration warnings:\n")
+		for _, warn := range result.Warnings {
+			fmt.Fprintf(os.Stderr, "  ⚠ %s: %s (value: %v)\n", warn.Field, warn.Message, warn.Value)
+		}
+	}
+
+	return result.IsValid()
+}
+
 // Helper functions
 func toInt(v interface{}) int {
 	switch val := v.(type) {
