@@ -73,6 +73,7 @@ write, edit, and understand code using natural language.`,
 	rootCmd.AddCommand(configCmd())
 	rootCmd.AddCommand(authCmd())
 	rootCmd.AddCommand(workCmd())
+	rootCmd.AddCommand(workflowCmd())
 
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
