@@ -59,6 +59,9 @@ type AppModel struct {
 	ready       bool
 	mdRenderer  *glamour.TermRenderer
 
+	// Pending input queue
+	pendingInput string
+
 	// Callbacks
 	onSubmit func(input string)
 	onCancel func()
@@ -125,10 +128,14 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyEnter:
-			if !m.isWorking {
-				input := strings.TrimSpace(m.textarea.Value())
-				if input != "" {
-					m.textarea.Reset()
+			input := strings.TrimSpace(m.textarea.Value())
+			if input != "" {
+				m.textarea.Reset()
+				if m.isWorking {
+					// Queue the input for later
+					m.pendingInput = input
+					m.AppendContent(fmt.Sprintf("\n%s[Queued: %s]%s\n", ansiDim, input, ansiReset))
+				} else {
 					if m.onSubmit != nil {
 						m.onSubmit(input)
 					}
@@ -185,18 +192,21 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case doneMsg:
 		m.isWorking = false
 		m.statusText = "Ready"
+		// Process pending input if any
+		if m.pendingInput != "" && m.onSubmit != nil {
+			input := m.pendingInput
+			m.pendingInput = ""
+			m.onSubmit(input)
+		}
 		return m, nil
 	}
 
-	// Update textarea
-	if !m.isWorking {
-		var cmd tea.Cmd
-		m.textarea, cmd = m.textarea.Update(msg)
-		cmds = append(cmds, cmd)
-	}
+	// Always update textarea (allow typing while working)
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	cmds = append(cmds, cmd)
 
 	// Update viewport (for scrolling)
-	var cmd tea.Cmd
 	m.viewport, cmd = m.viewport.Update(msg)
 	cmds = append(cmds, cmd)
 
