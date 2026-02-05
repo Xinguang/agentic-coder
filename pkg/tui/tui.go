@@ -1,50 +1,24 @@
-// Package tui provides an interactive terminal UI for the coding assistant
+// Package tui provides an interactive terminal UI matching Claude Code style
 package tui
 
 import (
 	"fmt"
+	"os"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
-// Styles - Clean minimal design like Claude Code
-var (
-	// Prompt styles
-	promptStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("6")).
-			Bold(true)
-
-	// Status/dim text
-	dimStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("242"))
-
-	// Tool styles
-	toolStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("214"))
-
-	// Error style
-	errorStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("196"))
-
-	// Success style
-	successStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("46"))
-
-	// Thinking style
-	thinkingStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("242")).
-			Italic(true)
-
-	// User input echo
-	userStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("255")).
-			Bold(true)
+// ANSI color codes
+const (
+	ansiReset  = "\033[0m"
+	ansiDim    = "\033[90m"
+	ansiCyan   = "\033[36;1m"
+	ansiGreen  = "\033[32m"
+	ansiRed    = "\033[31m"
+	ansiYellow = "\033[33;1m"
 )
 
 // Message types for tea.Cmd
@@ -62,41 +36,67 @@ type (
 	}
 	StreamDoneMsg struct {
 		Error error
-		OpID  uint64 // Operation ID to track which operation completed
+		OpID  uint64
 	}
-	InterruptMsg struct{}
+	InterruptMsg   struct{}
+	TokenUpdateMsg struct {
+		InputTokens  int
+		OutputTokens int
+		CostUSD      float64
+	}
 )
 
 // SubmitCallback is called when user submits input
-// opID is passed to track the operation and return in StreamDoneMsg
 type SubmitCallback func(input string, opID uint64) tea.Cmd
+
+// BashCallback is called for ! prefix commands
+type BashCallback func(command string) tea.Cmd
 
 // Model represents the TUI state
 type Model struct {
 	textinput    textinput.Model
 	spinner      spinner.Model
-	viewport     viewport.Model
-	output       *strings.Builder
 	isStreaming  bool
-	isThinking   bool
 	thinkingText string
 	interrupted  bool
-	currentOpID  uint64 // Current operation ID
-	autoScroll   bool   // Auto-scroll to bottom on new content
+	currentOpID  uint64
+	verbose      bool
+
+	// Session info
 	model        string
 	cwd          string
 	version      string
-	sessionID    string // Short session ID
-	messageCount int    // Messages in session (for resumed sessions)
-	width           int
-	height          int
+	sessionID    string
+	sessionName  string
+	messageCount int
+
+	// Token tracking
+	inputTokens  int
+	outputTokens int
+	totalCostUSD float64
+
+	// Todo/Task list
+	todos     []Todo
+	showTodos bool
+
+	// Dimensions
+	width  int
+	height int
+
+	// Callbacks
 	onSubmit        SubmitCallback
+	onBash          BashCallback
 	onListSessions  ListSessionsCallback
 	onResumeSession ResumeSessionCallback
 	onNewSession    NewSessionCallback
-	lastActivity    time.Time
-	showWelcome     bool
-	ready           bool // Viewport ready after first WindowSizeMsg
+
+	ready bool
+}
+
+// Todo represents a task item
+type Todo struct {
+	Content string
+	Status  string // pending, in_progress, completed
 }
 
 // SessionInfo holds session metadata for display
@@ -108,19 +108,21 @@ type SessionInfo struct {
 	IsCurrent    bool
 }
 
-// SessionCallback types
+// Callback types
 type ListSessionsCallback func() []SessionInfo
 type ResumeSessionCallback func(id string) (messageCount int, err error)
 type NewSessionCallback func() (sessionID string, err error)
 
 // Config holds TUI configuration
 type Config struct {
-	Model        string
-	CWD          string
-	Version      string
-	SessionID    string // Short session ID for display
-	MessageCount int    // Number of messages in resumed session
-	OnSubmit     SubmitCallback
+	Model           string
+	CWD             string
+	Version         string
+	SessionID       string
+	SessionName     string
+	MessageCount    int
+	OnSubmit        SubmitCallback
+	OnBash          BashCallback
 	OnListSessions  ListSessionsCallback
 	OnResumeSession ResumeSessionCallback
 	OnNewSession    NewSessionCallback
@@ -131,33 +133,26 @@ func New(cfg Config) Model {
 	ti := textinput.New()
 	ti.Placeholder = ""
 	ti.Focus()
-	ti.Prompt = "" // We'll render prompt ourselves
+	ti.Prompt = ""
 	ti.CharLimit = 0
 
 	s := spinner.New()
 	s.Spinner = spinner.Dot
-	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
-
-	vp := viewport.New(80, 20) // Will be resized on WindowSizeMsg
-	vp.SetContent("")
 
 	return Model{
 		textinput:       ti,
 		spinner:         s,
-		viewport:        vp,
-		output:          &strings.Builder{},
-		autoScroll:      true,
 		model:           cfg.Model,
 		cwd:             cfg.CWD,
 		version:         cfg.Version,
 		sessionID:       cfg.SessionID,
+		sessionName:     cfg.SessionName,
 		messageCount:    cfg.MessageCount,
 		onSubmit:        cfg.OnSubmit,
+		onBash:          cfg.OnBash,
 		onListSessions:  cfg.OnListSessions,
 		onResumeSession: cfg.OnResumeSession,
 		onNewSession:    cfg.OnNewSession,
-		lastActivity:    time.Now(),
-		showWelcome:     true,
 	}
 }
 
@@ -174,91 +169,84 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch msg.Type {
+		case tea.KeyCtrlC:
+			if m.isStreaming {
+				m.interrupted = true
+				fmt.Fprintf(os.Stdout, "\n%s⏹ Interrupted%s\n", ansiRed, ansiReset)
+				return m, func() tea.Msg { return InterruptMsg{} }
+			}
+			return m, tea.Quit
+
+		case tea.KeyCtrlD:
+			return m, tea.Quit
+
+		case tea.KeyCtrlL:
+			fmt.Print("\033[H\033[2J")
+			return m, nil
+
+		case tea.KeyCtrlO:
+			m.verbose = !m.verbose
+			if m.verbose {
+				fmt.Fprintf(os.Stdout, "%sVerbose mode enabled%s\n", ansiDim, ansiReset)
+			} else {
+				fmt.Fprintf(os.Stdout, "%sVerbose mode disabled%s\n", ansiDim, ansiReset)
+			}
+			return m, nil
+
+		case tea.KeyCtrlT:
+			m.showTodos = !m.showTodos
+			if m.showTodos && len(m.todos) > 0 {
+				m.printTodos()
+			}
+			return m, nil
+
 		case tea.KeyEsc:
-			// Clear input or stop streaming on Escape
 			if m.textinput.Value() != "" {
 				m.textinput.Reset()
 				return m, nil
 			} else if m.isStreaming {
 				m.interrupted = true
-				m.print(errorStyle.Render("\n⚠ Interrupted\n"))
+				fmt.Fprintf(os.Stdout, "\n%s⏹ Interrupted%s\n", ansiRed, ansiReset)
 				return m, func() tea.Msg { return InterruptMsg{} }
 			}
 			return m, nil
-
-		case tea.KeyCtrlC:
-			if m.isStreaming {
-				m.interrupted = true
-				m.print(errorStyle.Render("\n⚠ Interrupted\n"))
-				return m, func() tea.Msg { return InterruptMsg{} }
-			}
-			return m, tea.Quit
 
 		case tea.KeyEnter:
 			input := strings.TrimSpace(m.textinput.Value())
-			if input != "" {
-				// If streaming, interrupt first
-				if m.isStreaming {
-					m.interrupted = true
-					m.print(errorStyle.Render("\n⚠ Interrupted\n\n"))
-				}
-
-				m.textinput.Reset()
-
-				// Echo user input
-				m.print(userStyle.Render(input) + "\n\n")
-
-				// Handle commands
-				if strings.HasPrefix(input, "/") {
-					m.isStreaming = false
-					m.isThinking = false
-					return m, m.handleCommand(input)
-				}
-
-				m.isStreaming = true
-				m.isThinking = true
-				m.thinkingText = "Thinking"
-				m.interrupted = false
-				m.currentOpID++ // Increment operation ID
-				m.lastActivity = time.Now()
-
-				if m.onSubmit != nil {
-					return m, tea.Batch(m.onSubmit(input, m.currentOpID), m.spinner.Tick)
-				}
+			if input == "" {
+				return m, nil
 			}
-			return m, nil
 
-		case tea.KeyCtrlD:
-			return m, tea.Quit
-
-		case tea.KeyTab:
-			// Tab: ignore (could be used for autocomplete later)
-			return m, nil
-
-		case tea.KeyPgUp:
-			m.autoScroll = false
-			m.viewport.ViewUp()
-			return m, nil
-
-		case tea.KeyPgDown:
-			m.viewport.ViewDown()
-			// Re-enable auto-scroll if at bottom
-			if m.viewport.AtBottom() {
-				m.autoScroll = true
+			if m.isStreaming {
+				m.interrupted = true
+				fmt.Fprintf(os.Stdout, "\n%s⏹ Interrupted%s\n\n", ansiRed, ansiReset)
 			}
-			return m, nil
 
-		case tea.KeyUp:
-			// Allow scrolling with arrow keys (Ctrl+Up for scrolling when typing)
-			m.autoScroll = false
-			m.viewport.LineUp(1)
-			return m, nil
+			m.textinput.Reset()
 
-		case tea.KeyDown:
-			// Allow scrolling with arrow keys (Ctrl+Down for scrolling when typing)
-			m.viewport.LineDown(1)
-			if m.viewport.AtBottom() {
-				m.autoScroll = true
+			if strings.HasPrefix(input, "/") {
+				fmt.Fprintf(os.Stdout, "%s> %s%s\n\n", ansiDim, input, ansiReset)
+				m.isStreaming = false
+				return m, m.handleCommand(input)
+			} else if strings.HasPrefix(input, "!") {
+				bashCmd := strings.TrimPrefix(input, "!")
+				bashCmd = strings.TrimSpace(bashCmd)
+				fmt.Fprintf(os.Stdout, "%s$ %s%s\n", ansiDim, bashCmd, ansiReset)
+				if m.onBash != nil {
+					return m, m.onBash(bashCmd)
+				}
+				fmt.Fprintf(os.Stdout, "%sBash mode not available%s\n", ansiRed, ansiReset)
+				return m, nil
+			}
+
+			fmt.Fprintf(os.Stdout, "> %s\n\n", input)
+			m.isStreaming = true
+			m.thinkingText = "Thinking"
+			m.interrupted = false
+			m.currentOpID++
+
+			if m.onSubmit != nil {
+				return m, tea.Batch(m.onSubmit(input, m.currentOpID), m.spinner.Tick)
 			}
 			return m, nil
 		}
@@ -267,31 +255,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.textinput.Width = msg.Width - 4
-
-		// Calculate viewport height (total - status line - input line - padding)
-		headerHeight := 0
-		footerHeight := 2 // status line + input line
-		if m.isStreaming {
-			footerHeight = 3 // extra line for thinking status
-		}
-		vpHeight := msg.Height - headerHeight - footerHeight
-		if vpHeight < 1 {
-			vpHeight = 1
-		}
-
-		if !m.ready {
-			m.viewport = viewport.New(msg.Width, vpHeight)
-			m.viewport.SetContent(m.getViewportContent())
-			m.ready = true
-		} else {
-			m.viewport.Width = msg.Width
-			m.viewport.Height = vpHeight
-		}
-
-		// Auto-scroll to bottom
-		if m.autoScroll {
-			m.viewport.GotoBottom()
-		}
+		m.ready = true
 
 	case spinner.TickMsg:
 		if m.isStreaming {
@@ -300,295 +264,380 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case StreamTextMsg:
-		m.isThinking = false
-		m.lastActivity = time.Now()
-		m.print(msg.Text)
-		m.updateViewport()
-
-	case StreamThinkingMsg:
-		m.lastActivity = time.Now()
+		fmt.Fprint(os.Stdout, msg.Text)
 
 	case ToolUseMsg:
-		m.isThinking = false
 		m.thinkingText = msg.Name
-		m.lastActivity = time.Now()
-		m.print(fmt.Sprintf("\n%s %s\n", toolStyle.Render("⚡"), msg.Name))
-
-		// For Edit tool, show full diff
-		if msg.Name == "Edit" {
-			if filePath, ok := msg.Params["file_path"].(string); ok {
-				m.print(dimStyle.Render(fmt.Sprintf("  file: %s\n", filePath)))
-			}
-			if oldStr, ok := msg.Params["old_string"].(string); ok && oldStr != "" {
-				m.print(errorStyle.Render("  - ") + dimStyle.Render(formatCodeBlock(oldStr)) + "\n")
-			}
-			if newStr, ok := msg.Params["new_string"].(string); ok && newStr != "" {
-				m.print(successStyle.Render("  + ") + dimStyle.Render(formatCodeBlock(newStr)) + "\n")
-			}
-		} else if msg.Name == "Write" {
-			if filePath, ok := msg.Params["file_path"].(string); ok {
-				m.print(dimStyle.Render(fmt.Sprintf("  file: %s\n", filePath)))
-			}
-			if content, ok := msg.Params["content"].(string); ok {
-				lines := strings.Split(content, "\n")
-				m.print(dimStyle.Render(fmt.Sprintf("  content: %d lines\n", len(lines))))
-			}
-		} else {
-			// Default: show params with truncation
-			for k, v := range msg.Params {
-				valStr := fmt.Sprintf("%v", v)
-				if len(valStr) > 100 {
-					valStr = valStr[:100] + "..."
-				}
-				valStr = strings.ReplaceAll(valStr, "\n", "\\n")
-				m.print(dimStyle.Render(fmt.Sprintf("  %s: %s\n", k, valStr)))
-			}
-		}
-		m.updateViewport()
+		m.printToolUse(msg.Name, msg.Params)
 
 	case ToolResultMsg:
 		m.thinkingText = "Thinking"
-		m.lastActivity = time.Now()
-		if msg.Success {
-			if msg.Summary != "" {
-				m.print(successStyle.Render(fmt.Sprintf("✓ %s: %s\n", msg.Name, msg.Summary)))
-			} else {
-				m.print(successStyle.Render(fmt.Sprintf("✓ %s\n", msg.Name)))
-			}
-		} else {
-			m.print(errorStyle.Render(fmt.Sprintf("✗ %s: %s\n", msg.Name, msg.Summary)))
-		}
-		m.updateViewport()
+		m.printToolResult(msg.Name, msg.Success, msg.Summary)
 
 	case StreamDoneMsg:
-		// Only process if this is the current operation (ignore stale messages)
 		if msg.OpID == m.currentOpID {
 			m.isStreaming = false
-			m.isThinking = false
 			m.thinkingText = ""
 			if msg.Error != nil && !m.interrupted {
-				m.print(errorStyle.Render(fmt.Sprintf("\nError: %v\n", msg.Error)))
+				fmt.Fprintf(os.Stdout, "\n%sError: %v%s\n", ansiRed, msg.Error, ansiReset)
 			}
-			m.print("\n")
-			m.updateViewport()
+			fmt.Fprint(os.Stdout, "\n")
 		}
+
+	case TokenUpdateMsg:
+		m.inputTokens += msg.InputTokens
+		m.outputTokens += msg.OutputTokens
+		m.totalCostUSD += msg.CostUSD
 	}
 
-	// Always update text input (allow typing while streaming)
 	m.textinput, cmd = m.textinput.Update(msg)
 	cmds = append(cmds, cmd)
 
 	return m, tea.Batch(cmds...)
 }
 
-// View renders the UI
+// View renders only the input prompt
 func (m Model) View() string {
 	if !m.ready {
-		return "Initializing..."
+		return ""
 	}
 
-	var b strings.Builder
-
-	// Viewport (scrollable output area)
-	b.WriteString(m.viewport.View())
-	b.WriteString("\n")
-
-	// Status line when streaming (show above prompt)
 	if m.isStreaming {
-		status := m.thinkingText
-		if status == "" {
-			status = "Thinking"
+		return fmt.Sprintf("%s %s\n> %s", m.spinner.View(), m.thinkingText, m.textinput.View())
+	}
+
+	return fmt.Sprintf("> %s", m.textinput.View())
+}
+
+// PrintWelcome prints the welcome message
+func (m *Model) PrintWelcome() {
+	info := m.model
+	if m.cwd != "" {
+		info += " • " + shortenPath(m.cwd, 40)
+	}
+	if m.sessionID != "" {
+		info += " • " + m.sessionID
+		if m.messageCount > 0 {
+			info += fmt.Sprintf(" (%d msgs)", m.messageCount)
 		}
-		b.WriteString(dimStyle.Render(fmt.Sprintf("%s %s...", m.spinner.View(), status)))
-		b.WriteString("\n")
 	}
 
-	// Scroll indicator
-	scrollInfo := ""
-	if !m.viewport.AtBottom() {
-		scrollInfo = dimStyle.Render(" [↑↓ scroll]")
+	fmt.Fprintf(os.Stdout, "\n%sAgentic Coder v%s%s\n", ansiCyan, m.version, ansiReset)
+	fmt.Fprintf(os.Stdout, "%s%s%s\n\n", ansiDim, info, ansiReset)
+	fmt.Fprintf(os.Stdout, "%sType your message or /help for commands%s\n\n", ansiDim, ansiReset)
+}
+
+func (m *Model) printTodos() {
+	fmt.Fprintf(os.Stdout, "%s━━━ Tasks ━━━%s\n", ansiDim, ansiReset)
+	for i, todo := range m.todos {
+		if i >= 10 {
+			fmt.Fprintf(os.Stdout, "%s  ... and %d more%s\n", ansiDim, len(m.todos)-10, ansiReset)
+			break
+		}
+		icon := "○"
+		color := ansiDim
+		switch todo.Status {
+		case "in_progress":
+			icon = "◐"
+			color = ansiCyan
+		case "completed":
+			icon = "●"
+			color = ansiGreen
+		}
+		fmt.Fprintf(os.Stdout, "%s  %s %s%s\n", color, icon, todo.Content, ansiReset)
+	}
+	fmt.Fprintf(os.Stdout, "%s━━━━━━━━━━━━━%s\n\n", ansiDim, ansiReset)
+}
+
+func (m *Model) printToolUse(name string, params map[string]interface{}) {
+	icon := "⚡"
+	switch name {
+	case "Read":
+		icon = "📖"
+	case "Write":
+		icon = "📝"
+	case "Edit":
+		icon = "✏️"
+	case "Bash":
+		icon = "💻"
+	case "Grep", "Glob":
+		icon = "🔍"
+	case "Task":
+		icon = "🤖"
 	}
 
-	// Prompt line (always visible): > input_here
-	b.WriteString(promptStyle.Render("> "))
-	b.WriteString(m.textinput.View())
-	b.WriteString(scrollInfo)
+	fmt.Fprintf(os.Stdout, "\n%s %s%s%s\n", icon, ansiYellow, name, ansiReset)
 
-	return b.String()
-}
-
-// print adds text to output
-func (m *Model) print(text string) {
-	m.output.WriteString(text)
-	m.showWelcome = false // Hide welcome after first output
-}
-
-// getViewportContent returns the content for the viewport
-func (m *Model) getViewportContent() string {
-	var b strings.Builder
-
-	// Welcome message (only shown once at start)
-	if m.showWelcome {
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Agentic Coder v%s", m.version)))
-		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(fmt.Sprintf("  Model: %s | %s", m.model, shortenPath(m.cwd, 50))))
-		b.WriteString("\n")
-		if m.sessionID != "" {
-			if m.messageCount > 0 {
-				b.WriteString(dimStyle.Render(fmt.Sprintf("  Session: %s (resumed, %d messages)", m.sessionID, m.messageCount)))
-			} else {
-				b.WriteString(dimStyle.Render(fmt.Sprintf("  Session: %s", m.sessionID)))
+	switch name {
+	case "Edit":
+		if fp, ok := params["file_path"].(string); ok {
+			fmt.Fprintf(os.Stdout, "%s   %s%s\n", ansiDim, fp, ansiReset)
+		}
+		if m.verbose {
+			if old, ok := params["old_string"].(string); ok && old != "" {
+				fmt.Fprintf(os.Stdout, "%s  - %s%s\n", ansiRed, m.formatCode(old), ansiReset)
 			}
-			b.WriteString("\n")
+			if newStr, ok := params["new_string"].(string); ok && newStr != "" {
+				fmt.Fprintf(os.Stdout, "%s  + %s%s\n", ansiGreen, m.formatCode(newStr), ansiReset)
+			}
 		}
-		b.WriteString(dimStyle.Render("  Type /help for commands, ↑↓/PgUp/PgDn to scroll"))
-		b.WriteString("\n\n")
+	case "Write", "Read":
+		if fp, ok := params["file_path"].(string); ok {
+			fmt.Fprintf(os.Stdout, "%s   %s%s\n", ansiDim, fp, ansiReset)
+		}
+	case "Bash":
+		if cmd, ok := params["command"].(string); ok {
+			fmt.Fprintf(os.Stdout, "%s   $ %s%s\n", ansiDim, truncate(cmd, 80), ansiReset)
+		}
+	case "Grep", "Glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			fmt.Fprintf(os.Stdout, "%s   pattern: %s%s\n", ansiDim, pattern, ansiReset)
+		}
+	default:
+		count := 0
+		for k, v := range params {
+			if count >= 2 {
+				fmt.Fprintf(os.Stdout, "%s   ...%s\n", ansiDim, ansiReset)
+				break
+			}
+			valStr := truncate(fmt.Sprintf("%v", v), 60)
+			valStr = strings.ReplaceAll(valStr, "\n", "↵")
+			fmt.Fprintf(os.Stdout, "%s   %s: %s%s\n", ansiDim, k, valStr, ansiReset)
+			count++
+		}
 	}
-
-	// Output content
-	b.WriteString(m.output.String())
-
-	return b.String()
 }
 
-// updateViewport updates the viewport content and scrolls if needed
-func (m *Model) updateViewport() {
-	m.viewport.SetContent(m.getViewportContent())
-	if m.autoScroll {
-		m.viewport.GotoBottom()
+func (m *Model) printToolResult(name string, success bool, summary string) {
+	if success {
+		if summary != "" {
+			fmt.Fprintf(os.Stdout, "%s   ✓ %s%s\n", ansiGreen, truncate(summary, 60), ansiReset)
+		} else {
+			fmt.Fprintf(os.Stdout, "%s   ✓%s\n", ansiGreen, ansiReset)
+		}
+	} else {
+		fmt.Fprintf(os.Stdout, "%s   ✗ %s%s\n", ansiRed, truncate(summary, 60), ansiReset)
 	}
 }
 
-// handleCommand processes slash commands
+func (m *Model) formatCode(code string) string {
+	lines := strings.Split(code, "\n")
+	if len(lines) > 5 {
+		return fmt.Sprintf("(%d lines)", len(lines))
+	}
+	if len(lines) == 1 {
+		return truncate(code, 60)
+	}
+	return fmt.Sprintf("(%d lines)", len(lines))
+}
+
 func (m *Model) handleCommand(input string) tea.Cmd {
 	parts := strings.Fields(input)
 	if len(parts) == 0 {
 		return nil
 	}
 
-	switch parts[0] {
-	case "/help", "/h":
-		m.print(m.helpText())
-	case "/clear", "/cls":
-		m.output.Reset()
-		m.showWelcome = true
-		m.updateViewport()
+	cmd := strings.ToLower(parts[0])
+
+	switch cmd {
+	case "/help", "/h", "/?":
+		fmt.Fprint(os.Stdout, m.helpText())
+
+	case "/clear":
+		fmt.Print("\033[H\033[2J")
+
 	case "/exit", "/quit", "/q":
 		return tea.Quit
+
 	case "/model":
 		if len(parts) > 1 {
 			m.model = parts[1]
-			m.print(successStyle.Render(fmt.Sprintf("✓ Model: %s\n", m.model)))
+			fmt.Fprintf(os.Stdout, "%sModel: %s%s\n", ansiGreen, m.model, ansiReset)
 		} else {
-			m.print(fmt.Sprintf("Model: %s\n", m.model))
+			fmt.Fprintf(os.Stdout, "Current model: %s\n", m.model)
 		}
 
-	case "/history", "/sessions":
-		if m.onListSessions == nil {
-			m.print(errorStyle.Render("Session management not available\n"))
-			return nil
-		}
-		sessions := m.onListSessions()
-		if len(sessions) == 0 {
-			m.print(dimStyle.Render("No sessions found\n"))
-			return nil
-		}
-		m.print(dimStyle.Render("\n📋 Session History\n"))
-		m.print(dimStyle.Render("─────────────────────────────────────────\n"))
-		for i, s := range sessions {
-			marker := "  "
-			if s.IsCurrent {
-				marker = successStyle.Render("▶ ")
-			}
-			// Show: number. title (msgs, date)
-			m.print(fmt.Sprintf("%s%d. %s", marker, i+1, s.Summary))
-			m.print(dimStyle.Render(fmt.Sprintf(" (%d msgs, %s)\n", s.MessageCount, s.UpdatedAt)))
-		}
-		m.print(dimStyle.Render("─────────────────────────────────────────\n"))
-		m.print(dimStyle.Render("Use /resume <number> to switch session\n\n"))
+	case "/cost":
+		fmt.Fprintf(os.Stdout, "Input tokens:  %d\n", m.inputTokens)
+		fmt.Fprintf(os.Stdout, "Output tokens: %d\n", m.outputTokens)
+		fmt.Fprintf(os.Stdout, "Total cost:    $%.4f\n", m.totalCostUSD)
 
-	case "/resume":
-		if m.onResumeSession == nil {
-			m.print(errorStyle.Render("Session management not available\n"))
-			return nil
+	case "/verbose":
+		m.verbose = !m.verbose
+		if m.verbose {
+			fmt.Fprintf(os.Stdout, "%sVerbose mode enabled%s\n", ansiGreen, ansiReset)
+		} else {
+			fmt.Fprintf(os.Stdout, "%sVerbose mode disabled%s\n", ansiDim, ansiReset)
 		}
-		if len(parts) < 2 {
-			m.print(errorStyle.Render("Usage: /resume <session-id or number>\n"))
-			return nil
-		}
-		// Check if it's a number (from /history list)
-		sessionID := parts[1]
-		if m.onListSessions != nil {
-			if idx, err := fmt.Sscanf(parts[1], "%d", new(int)); err == nil && idx == 1 {
-				num := 0
-				fmt.Sscanf(parts[1], "%d", &num)
-				sessions := m.onListSessions()
-				if num > 0 && num <= len(sessions) {
-					sessionID = sessions[num-1].ID
+
+	case "/todos", "/tasks":
+		if len(m.todos) == 0 {
+			fmt.Fprintf(os.Stdout, "%sNo tasks%s\n", ansiDim, ansiReset)
+		} else {
+			for _, todo := range m.todos {
+				icon := "○"
+				switch todo.Status {
+				case "in_progress":
+					icon = "◐"
+				case "completed":
+					icon = "●"
 				}
+				fmt.Fprintf(os.Stdout, "  %s %s\n", icon, todo.Content)
 			}
 		}
-		msgCount, err := m.onResumeSession(sessionID)
-		if err != nil {
-			m.print(errorStyle.Render(fmt.Sprintf("Failed to resume: %v\n", err)))
-			return nil
+
+	case "/history", "/sessions", "/resume":
+		if cmd == "/resume" && len(parts) > 1 {
+			m.resumeSession(parts[1])
+		} else {
+			m.listSessions()
 		}
-		m.sessionID = sessionID
-		if len(sessionID) > 8 {
-			m.sessionID = sessionID[:8]
-		}
-		m.messageCount = msgCount
-		m.print(successStyle.Render(fmt.Sprintf("✓ Resumed session: %s (%d messages)\n", m.sessionID, msgCount)))
 
 	case "/new":
-		if m.onNewSession == nil {
-			m.print(errorStyle.Render("Session management not available\n"))
-			return nil
+		m.newSession()
+
+	case "/rename":
+		if len(parts) > 1 {
+			m.sessionName = strings.Join(parts[1:], " ")
+			fmt.Fprintf(os.Stdout, "%sSession renamed to: %s%s\n", ansiGreen, m.sessionName, ansiReset)
+		} else {
+			fmt.Fprintf(os.Stdout, "%sUsage: /rename <name>%s\n", ansiRed, ansiReset)
 		}
-		sessionID, err := m.onNewSession()
-		if err != nil {
-			m.print(errorStyle.Render(fmt.Sprintf("Failed to create session: %v\n", err)))
-			return nil
-		}
-		m.sessionID = sessionID
-		if len(sessionID) > 8 {
-			m.sessionID = sessionID[:8]
-		}
-		m.messageCount = 0
-		m.output.Reset()
-		m.showWelcome = true
-		m.print(successStyle.Render(fmt.Sprintf("✓ New session: %s\n", m.sessionID)))
+
+	case "/config", "/settings":
+		fmt.Fprintf(os.Stdout, "%sSettings:%s\n", ansiDim, ansiReset)
+		fmt.Fprintf(os.Stdout, "  Model: %s\n", m.model)
+		fmt.Fprintf(os.Stdout, "  Verbose: %v\n", m.verbose)
+		fmt.Fprintf(os.Stdout, "  CWD: %s\n", m.cwd)
 
 	default:
-		m.print(errorStyle.Render(fmt.Sprintf("Unknown command: %s\n", parts[0])))
+		fmt.Fprintf(os.Stdout, "%sUnknown command: %s%s\n", ansiRed, cmd, ansiReset)
+		fmt.Fprintf(os.Stdout, "%sType /help for available commands%s\n", ansiDim, ansiReset)
 	}
-	m.updateViewport()
+
 	return nil
 }
 
-func (m *Model) helpText() string {
-	return dimStyle.Render(`
-  Commands:
-    /help      Show this help
-    /history   List session history
-    /resume N  Resume session (N = number or ID)
-    /new       Start new session
-    /clear     Clear screen
-    /model     Show/change model
-    /exit      Exit
+func (m *Model) listSessions() {
+	if m.onListSessions == nil {
+		fmt.Fprintf(os.Stdout, "%sSession management not available%s\n", ansiRed, ansiReset)
+		return
+	}
+	sessions := m.onListSessions()
+	if len(sessions) == 0 {
+		fmt.Fprintf(os.Stdout, "%sNo sessions found%s\n", ansiDim, ansiReset)
+		return
+	}
 
-  Shortcuts:
-    Enter      Send message
-    Ctrl+C     Interrupt / Exit
-    Ctrl+D     Exit
-    Esc        Clear input / Cancel
-    ↑/↓        Scroll
-    PgUp/PgDn  Scroll page
-`) + "\n"
+	fmt.Fprintf(os.Stdout, "\n%s📋 Sessions%s\n", ansiDim, ansiReset)
+	fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n", ansiDim, ansiReset)
+	for i, s := range sessions {
+		marker := "  "
+		if s.IsCurrent {
+			marker = fmt.Sprintf("%s▸ %s", ansiCyan, ansiReset)
+		}
+		title := s.Summary
+		if title == "" {
+			title = "(untitled)"
+		}
+		fmt.Fprintf(os.Stdout, "%s%d. %s", marker, i+1, title)
+		fmt.Fprintf(os.Stdout, "%s (%d msgs, %s)%s\n", ansiDim, s.MessageCount, s.UpdatedAt, ansiReset)
+	}
+	fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n", ansiDim, ansiReset)
+	fmt.Fprintf(os.Stdout, "%sUse /resume <number> to switch%s\n\n", ansiDim, ansiReset)
 }
 
-// Helper functions
+func (m *Model) resumeSession(idOrNum string) {
+	if m.onResumeSession == nil {
+		fmt.Fprintf(os.Stdout, "%sSession management not available%s\n", ansiRed, ansiReset)
+		return
+	}
+
+	sessionID := idOrNum
+	if m.onListSessions != nil {
+		var num int
+		if _, err := fmt.Sscanf(idOrNum, "%d", &num); err == nil {
+			sessions := m.onListSessions()
+			if num > 0 && num <= len(sessions) {
+				sessionID = sessions[num-1].ID
+			}
+		}
+	}
+
+	msgCount, err := m.onResumeSession(sessionID)
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "%sFailed to resume: %v%s\n", ansiRed, err, ansiReset)
+		return
+	}
+
+	m.sessionID = sessionID
+	if len(sessionID) > 8 {
+		m.sessionID = sessionID[:8]
+	}
+	m.messageCount = msgCount
+	fmt.Fprintf(os.Stdout, "%sResumed session: %s (%d messages)%s\n\n", ansiGreen, m.sessionID, msgCount, ansiReset)
+}
+
+func (m *Model) newSession() {
+	if m.onNewSession == nil {
+		fmt.Fprintf(os.Stdout, "%sSession management not available%s\n", ansiRed, ansiReset)
+		return
+	}
+
+	sessionID, err := m.onNewSession()
+	if err != nil {
+		fmt.Fprintf(os.Stdout, "%sFailed to create session: %v%s\n", ansiRed, err, ansiReset)
+		return
+	}
+
+	m.sessionID = sessionID
+	if len(sessionID) > 8 {
+		m.sessionID = sessionID[:8]
+	}
+	m.sessionName = ""
+	m.messageCount = 0
+	m.inputTokens = 0
+	m.outputTokens = 0
+	m.totalCostUSD = 0
+	fmt.Fprintf(os.Stdout, "%sNew session: %s%s\n\n", ansiGreen, m.sessionID, ansiReset)
+}
+
+func (m *Model) helpText() string {
+	return fmt.Sprintf(`
+%sCommands%s
+  /help          Show this help
+  /clear         Clear screen
+  /exit          Exit
+  /model [name]  Show or change model
+  /cost          Show token usage and cost
+  /verbose       Toggle verbose mode
+  /todos         Show task list
+
+%sSessions%s
+  /history       List sessions
+  /resume <n>    Resume session by number or ID
+  /new           Start new session
+  /rename <name> Rename current session
+
+%sShortcuts%s
+  Ctrl+C         Interrupt / Exit
+  Ctrl+D         Exit
+  Ctrl+L         Clear screen
+  Ctrl+O         Toggle verbose
+  Ctrl+T         Toggle task list
+
+%sInput Modes%s
+  /command       Run a command
+  !shell cmd     Run shell command directly
+
+`, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
+}
+
+// UpdateTodos updates the todo list
+func (m *Model) UpdateTodos(todos []Todo) {
+	m.todos = todos
+}
+
 func shortenPath(path string, maxLen int) string {
 	if len(path) <= maxLen {
 		return path
@@ -596,27 +645,16 @@ func shortenPath(path string, maxLen int) string {
 	return "..." + path[len(path)-maxLen+3:]
 }
 
-// formatCodeBlock formats a code block for display, limiting lines
-func formatCodeBlock(code string) string {
-	lines := strings.Split(code, "\n")
-	maxLines := 10
-	if len(lines) > maxLines {
-		result := strings.Join(lines[:maxLines], "\n    ")
-		return fmt.Sprintf("\n    %s\n    ... (%d more lines)", result, len(lines)-maxLines)
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
 	}
-	if len(lines) > 1 {
-		return "\n    " + strings.Join(lines, "\n    ")
-	}
-	return code
+	return s[:maxLen-3] + "..."
 }
 
-// Message constructors for external use
+// Message constructors
 func SendStreamText(text string) tea.Cmd {
 	return func() tea.Msg { return StreamTextMsg{Text: text} }
-}
-
-func SendThinking(text string) tea.Cmd {
-	return func() tea.Msg { return StreamThinkingMsg{Text: text} }
 }
 
 func SendToolUse(name string, params map[string]interface{}) tea.Cmd {
@@ -629,4 +667,8 @@ func SendToolResult(name string, success bool, summary string) tea.Cmd {
 
 func SendStreamDone(err error, opID uint64) tea.Cmd {
 	return func() tea.Msg { return StreamDoneMsg{Error: err, OpID: opID} }
+}
+
+func SendTokenUpdate(input, output int, cost float64) tea.Cmd {
+	return func() tea.Msg { return TokenUpdateMsg{InputTokens: input, OutputTokens: output, CostUSD: cost} }
 }

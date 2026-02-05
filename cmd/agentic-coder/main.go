@@ -485,7 +485,7 @@ func runChat(cmd *cobra.Command, args []string) error {
 		// Create a pointer to track current session for callbacks
 		currentSess := sess
 
-		runner := tui.NewRunner(eng, tui.Config{
+		runner := tui.NewSimpleRunner(eng, tui.Config{
 			Model:        sess.Model,
 			CWD:          cwd,
 			Version:      version,

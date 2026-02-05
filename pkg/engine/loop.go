@@ -30,11 +30,12 @@ type Engine struct {
 	thinkingLevel string // high, medium, low, none
 
 	// Callbacks
-	onText      func(text string)
-	onThinking  func(text string)
-	onToolUse   func(name string, input map[string]interface{})
+	onText       func(text string)
+	onThinking   func(text string)
+	onToolUse    func(name string, input map[string]interface{})
 	onToolResult func(name string, result *tool.Output)
-	onError     func(err error)
+	onUsage      func(inputTokens, outputTokens int)
+	onError      func(err error)
 }
 
 // EngineOptions holds engine configuration
@@ -88,6 +89,9 @@ func (e *Engine) SetCallbacks(opts *CallbackOptions) {
 	if opts.OnToolResult != nil {
 		e.onToolResult = opts.OnToolResult
 	}
+	if opts.OnUsage != nil {
+		e.onUsage = opts.OnUsage
+	}
 	if opts.OnError != nil {
 		e.onError = opts.OnError
 	}
@@ -99,6 +103,7 @@ type CallbackOptions struct {
 	OnThinking   func(text string)
 	OnToolUse    func(name string, input map[string]interface{})
 	OnToolResult func(name string, result *tool.Output)
+	OnUsage      func(inputTokens, outputTokens int)
 	OnError      func(err error)
 }
 
@@ -372,6 +377,10 @@ func (e *Engine) callProvider(ctx context.Context, req *provider.Request) (*prov
 			}
 			if ev.Usage != nil {
 				response.Usage = *ev.Usage
+				// Trigger usage callback
+				if e.onUsage != nil {
+					e.onUsage(ev.Usage.InputTokens, ev.Usage.OutputTokens)
+				}
 			}
 
 		case *provider.MessageStopEvent:

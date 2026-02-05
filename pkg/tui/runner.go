@@ -48,9 +48,12 @@ func NewRunner(eng *engine.Engine, cfg Config) *Runner {
 
 // Run starts the TUI
 func (r *Runner) Run() error {
+	// Print welcome BEFORE starting bubbletea (avoids render conflicts)
+	r.model.PrintWelcome()
+
 	r.program = tea.NewProgram(
 		*r.model,
-		tea.WithAltScreen(), // Use alt screen for stable rendering
+		// Note: Not using WithAltScreen() to allow text selection and native scrolling
 	)
 
 	// Start message forwarder
@@ -113,6 +116,16 @@ func (r *Runner) handleSubmit(input string, opID uint64) tea.Cmd {
 					}
 				}
 				r.sendMsg(ToolResultMsg{Name: name, Success: success, Summary: summary})
+			},
+			OnUsage: func(inputTokens, outputTokens int) {
+				// Calculate approximate cost for Claude
+				// Claude: ~$3/$15 per MTok for input/output (Sonnet 3.5)
+				cost := float64(inputTokens)*0.000003 + float64(outputTokens)*0.000015
+				r.sendMsg(TokenUpdateMsg{
+					InputTokens:  inputTokens,
+					OutputTokens: outputTokens,
+					CostUSD:      cost,
+				})
 			},
 			OnError: func(err error) {
 				r.sendMsg(StreamDoneMsg{Error: err, OpID: opID})
