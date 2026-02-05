@@ -8,16 +8,41 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/charmbracelet/glamour"
 	"github.com/xinguang/agentic-coder/pkg/engine"
+	"github.com/xinguang/agentic-coder/pkg/provider"
+	"github.com/xinguang/agentic-coder/pkg/review"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 )
 
+// Markdown renderer
+var mdRenderer *glamour.TermRenderer
+
+func init() {
+	var err error
+	mdRenderer, err = glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(100),
+	)
+	if err != nil {
+		mdRenderer = nil
+	}
+}
+
 // SimpleRunner runs without bubbletea for cleaner output
 type SimpleRunner struct {
-	engine   *engine.Engine
-	config   Config
-	verbose  bool
+	engine        *engine.Engine
+	config        Config
+	verbose       bool
+	reviewer      *review.Reviewer
+	reviewHistory *review.ReviewHistory
+
+	// Incremental and pipeline review
+	incrementalReviewer *review.IncrementalReviewer
+	pipeline            *review.Pipeline
+	lastResponse        string // For incremental review comparison
 
 	// Token tracking
 	inputTokens  int
@@ -32,29 +57,60 @@ type SimpleRunner struct {
 
 // NewSimpleRunner creates a simple TUI runner
 func NewSimpleRunner(eng *engine.Engine, cfg Config) *SimpleRunner {
+	// Set default max review cycles
+	if cfg.MaxReviewCycles == 0 {
+		cfg.MaxReviewCycles = 5
+	}
 	return &SimpleRunner{
 		engine: eng,
 		config: cfg,
 	}
 }
 
+// SetReviewer sets the reviewer for automatic review
+func (r *SimpleRunner) SetReviewer(prov provider.AIProvider) {
+	r.reviewer = review.NewReviewer(prov)
+}
+
+// SetReviewerWithConfig sets the reviewer with custom config
+func (r *SimpleRunner) SetReviewerWithConfig(prov provider.AIProvider, cfg *review.ReviewConfig) {
+	r.reviewer = review.NewReviewerWithConfig(prov, cfg)
+}
+
+// SetReviewHistory sets the review history recorder
+func (r *SimpleRunner) SetReviewHistory(history *review.ReviewHistory) {
+	r.reviewHistory = history
+}
+
+// SetIncrementalReview enables incremental review mode
+func (r *SimpleRunner) SetIncrementalReview(enabled bool) {
+	if enabled && r.reviewer != nil {
+		r.incrementalReviewer = review.NewIncrementalReviewer(r.reviewer)
+	} else {
+		r.incrementalReviewer = nil
+	}
+}
+
+// SetReviewPipeline sets a custom review pipeline
+func (r *SimpleRunner) SetReviewPipeline(pipeline *review.Pipeline) {
+	r.pipeline = pipeline
+}
+
 // Run starts the simple TUI
 func (r *SimpleRunner) Run() error {
 	r.printWelcome()
 
-	reader := bufio.NewReader(os.Stdin)
+	scanner := bufio.NewScanner(os.Stdin)
 
 	for {
 		fmt.Print("> ")
-		os.Stdout.Sync() // Flush to ensure prompt is visible
 
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			// EOF means stdin closed (Ctrl+D)
-			return nil
+		if !scanner.Scan() {
+			// EOF or error
+			return scanner.Err()
 		}
 
-		input = strings.TrimSpace(input)
+		input := strings.TrimSpace(scanner.Text())
 		if input == "" {
 			continue
 		}
@@ -77,8 +133,12 @@ func (r *SimpleRunner) Run() error {
 
 		// Regular message
 		fmt.Println()
-		r.runEngine(input)
-		fmt.Print("\n\n") // Ensure newline after response
+		response := r.runEngine(input)
+
+		// Auto-review if enabled
+		if r.config.EnableReview && r.reviewer != nil && response != "" {
+			r.runReviewCycle(input, response)
+		}
 
 		// Save session after each message
 		if r.config.OnSaveSession != nil {
@@ -104,7 +164,7 @@ func (r *SimpleRunner) printWelcome() {
 	fmt.Fprintf(os.Stdout, "%sType your message or /help for commands%s\n\n", ansiDim, ansiReset)
 }
 
-func (r *SimpleRunner) runEngine(input string) {
+func (r *SimpleRunner) runEngine(input string) string {
 	// Recover from panics
 	defer func() {
 		if err := recover(); err != nil {
@@ -117,16 +177,24 @@ func (r *SimpleRunner) runEngine(input string) {
 	ctx := r.ctx
 	r.mu.Unlock()
 
+	// Full response for review
+	var fullResponse strings.Builder
+
 	// Set up callbacks
 	r.engine.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
+			// Stream text directly for immediate feedback
 			fmt.Print(text)
+			fullResponse.WriteString(text)
 		},
 		OnThinking: func(text string) {
-			// Skip thinking in non-verbose mode
+			// Show thinking in dim color
+			fmt.Fprintf(os.Stdout, "%s%s%s", ansiDim, text, ansiReset)
 		},
 		OnToolUse: func(name string, params map[string]interface{}) {
 			r.printToolUse(name, params)
+			// Record tool use in full response
+			fullResponse.WriteString(fmt.Sprintf("\n[Tool: %s]\n", name))
 		},
 		OnToolResult: func(name string, result *tool.Output) {
 			success := !result.IsError
@@ -148,6 +216,12 @@ func (r *SimpleRunner) runEngine(input string) {
 				}
 			}
 			r.printToolResult(name, success, summary)
+			// Record tool result in full response
+			if result.IsError {
+				fullResponse.WriteString(fmt.Sprintf("[Tool Error: %s]\n", summary))
+			} else {
+				fullResponse.WriteString(fmt.Sprintf("[Tool Success: %s]\n", summary))
+			}
 		},
 		OnUsage: func(inputTokens, outputTokens int) {
 			r.inputTokens += inputTokens
@@ -165,7 +239,151 @@ func (r *SimpleRunner) runEngine(input string) {
 			fmt.Fprintf(os.Stdout, "%sError: %v%s\n", ansiRed, err, ansiReset)
 		}
 	}
+
+	// Add newline after response
+	fmt.Println()
+
+	return fullResponse.String()
 }
+
+// renderAndPrintMarkdown renders accumulated markdown and prints it
+func (r *SimpleRunner) renderAndPrintMarkdown(buf *strings.Builder) {
+	text := buf.String()
+	if text == "" {
+		return
+	}
+	buf.Reset()
+
+	// Render with glamour if available
+	if mdRenderer != nil {
+		rendered, err := mdRenderer.Render(text)
+		if err == nil {
+			fmt.Print(rendered)
+			return
+		}
+	}
+
+	// Fallback to raw text
+	fmt.Print(text)
+}
+
+// runReviewCycle runs the automatic review and correction cycle
+func (r *SimpleRunner) runReviewCycle(originalRequest, response string) {
+	maxCycles := r.config.MaxReviewCycles
+	if maxCycles <= 0 {
+		maxCycles = 5
+	}
+
+	currentResponse := response
+	totalReviewTokens := 0
+
+	// Check if incremental review is applicable
+	if r.incrementalReviewer != nil && r.lastResponse != "" {
+		incResult, err := r.incrementalReviewer.ReviewChanges(r.lastResponse, currentResponse)
+		if err == nil && !incResult.NeedsReview() {
+			fmt.Fprintf(os.Stdout, "\n%s✓ No significant changes detected, skipping review%s\n\n", ansiGreen, ansiReset)
+			r.lastResponse = currentResponse
+			return
+		}
+		if err == nil && incResult.ChangedBlocks < incResult.TotalBlocks {
+			fmt.Fprintf(os.Stdout, "\n%s📊 Incremental review: %d/%d blocks changed%s\n",
+				ansiDim, incResult.ChangedBlocks, incResult.TotalBlocks, ansiReset)
+		}
+	}
+
+	for cycle := 1; cycle <= maxCycles; cycle++ {
+		fmt.Fprintf(os.Stdout, "\n%s🔍 Reviewing response (cycle %d/%d)...%s\n", ansiDim, cycle, maxCycles, ansiReset)
+
+		// Run pipeline if available, otherwise use standard reviewer
+		var result *review.ReviewResult
+		var err error
+		startTime := timeNow()
+		ctx := context.Background()
+
+		if r.pipeline != nil {
+			// Use pipeline-based review
+			pipelineResult, pErr := r.pipeline.Run(ctx, currentResponse)
+			if pErr != nil {
+				err = pErr
+			} else {
+				// Convert pipeline result to review result
+				result = &review.ReviewResult{
+					Passed:   pipelineResult.Passed,
+					Issues:   pipelineResult.Summary,
+					Feedback: r.extractSuggestions(pipelineResult),
+				}
+			}
+		} else {
+			// Standard review
+			result, err = r.reviewer.Review(ctx, originalRequest, currentResponse)
+		}
+		durationMs := timeNow().Sub(startTime).Milliseconds()
+
+		if err != nil {
+			fmt.Fprintf(os.Stdout, "%sReview error: %v%s\n", ansiRed, err, ansiReset)
+			return
+		}
+
+		// Record to history if available
+		if r.reviewHistory != nil {
+			r.reviewHistory.Record(r.config.SessionID, cycle, result, durationMs)
+		}
+
+		// Track review token usage
+		reviewTokens := result.InputTokens + result.OutputTokens
+		totalReviewTokens += reviewTokens
+		r.inputTokens += result.InputTokens
+		r.outputTokens += result.OutputTokens
+
+		if result.Passed {
+			fmt.Fprintf(os.Stdout, "%s✓ Review passed%s", ansiGreen, ansiReset)
+			fmt.Fprintf(os.Stdout, " %s(review tokens: %d)%s\n\n", ansiDim, totalReviewTokens, ansiReset)
+
+			// Cache for incremental review
+			if r.incrementalReviewer != nil {
+				for _, block := range review.ExtractCodeBlocks(currentResponse) {
+					r.incrementalReviewer.CacheResult(block, true, "", "")
+				}
+			}
+			r.lastResponse = currentResponse
+			return
+		}
+
+		// Show issues found
+		fmt.Fprintf(os.Stdout, "%s⚠ Issues found:%s\n", ansiYellow, ansiReset)
+		if result.Issues != "" {
+			fmt.Fprintf(os.Stdout, "%s%s%s\n", ansiDim, result.Issues, ansiReset)
+		}
+
+		// Check if this is the last cycle
+		if cycle == maxCycles {
+			fmt.Fprintf(os.Stdout, "\n%s❌ Max review cycles reached. Suggestions:%s\n", ansiRed, ansiReset)
+			fmt.Fprintf(os.Stdout, "%s%s%s\n", ansiDim, result.Feedback, ansiReset)
+			fmt.Fprintf(os.Stdout, "%sPlease refine your request or manually address the issues above.%s\n", ansiDim, ansiReset)
+			fmt.Fprintf(os.Stdout, "%s(total review tokens: %d)%s\n\n", ansiDim, totalReviewTokens, ansiReset)
+			r.lastResponse = currentResponse
+			return
+		}
+
+		// Generate correction prompt and run engine again
+		correctionPrompt := r.reviewer.GenerateCorrectionPrompt(result.Issues, result.Feedback)
+		fmt.Fprintf(os.Stdout, "\n%s🔄 Auto-correcting...%s\n\n", ansiCyan, ansiReset)
+
+		currentResponse = r.runEngine(correctionPrompt)
+	}
+}
+
+// extractSuggestions extracts suggestions from pipeline result
+func (r *SimpleRunner) extractSuggestions(result *review.PipelineResult) string {
+	var suggestions []string
+	for _, check := range result.Checks {
+		suggestions = append(suggestions, check.Suggestions...)
+	}
+	return strings.Join(suggestions, "\n")
+}
+
+// timeNow is a variable for testing
+var timeNow = time.Now
 
 func (r *SimpleRunner) printToolUse(name string, params map[string]interface{}) {
 	icon := "⚡"
@@ -249,6 +467,38 @@ func (r *SimpleRunner) handleCommand(input string) bool {
 		fmt.Fprintf(os.Stdout, "Input tokens:  %d\n", r.inputTokens)
 		fmt.Fprintf(os.Stdout, "Output tokens: %d\n", r.outputTokens)
 		fmt.Fprintf(os.Stdout, "Total cost:    $%.4f\n", r.totalCost)
+
+	case "/review-stats":
+		if r.reviewHistory == nil {
+			fmt.Fprintf(os.Stdout, "%sReview history not available%s\n", ansiDim, ansiReset)
+		} else {
+			stats := r.reviewHistory.GetStats()
+			fmt.Fprintf(os.Stdout, "\n%s📊 Review Statistics%s\n", ansiCyan, ansiReset)
+			fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n", ansiDim, ansiReset)
+			fmt.Fprintf(os.Stdout, "Total reviews:    %d\n", stats.TotalReviews)
+			fmt.Fprintf(os.Stdout, "Passed:           %d\n", stats.PassedCount)
+			fmt.Fprintf(os.Stdout, "Failed:           %d\n", stats.FailedCount)
+			fmt.Fprintf(os.Stdout, "Pass rate:        %.1f%%\n", stats.PassRate)
+			fmt.Fprintf(os.Stdout, "Avg tokens/review: %d\n", stats.AvgTokensPerReview)
+			fmt.Fprintf(os.Stdout, "Avg duration:     %dms\n", stats.AvgDurationMs)
+			fmt.Fprintf(os.Stdout, "%s───────────────────────────────────────%s\n\n", ansiDim, ansiReset)
+		}
+
+	case "/review-clear":
+		if r.reviewHistory == nil {
+			fmt.Fprintf(os.Stdout, "%sReview history not available%s\n", ansiDim, ansiReset)
+		} else {
+			if err := r.reviewHistory.ClearHistory(); err != nil {
+				fmt.Fprintf(os.Stdout, "%sFailed to clear history: %v%s\n", ansiRed, err, ansiReset)
+			} else {
+				fmt.Fprintf(os.Stdout, "%s✓ Review history cleared%s\n", ansiGreen, ansiReset)
+			}
+		}
+		// Also clear incremental review cache
+		if r.incrementalReviewer != nil {
+			r.incrementalReviewer.ClearCache()
+			r.lastResponse = ""
+		}
 
 	case "/verbose":
 		r.verbose = !r.verbose
@@ -388,6 +638,10 @@ func (r *SimpleRunner) helpText() string {
   /resume <n>    Resume session by number or ID
   /new           Start new session
 
+%sReview%s
+  /review-stats  Show review statistics
+  /review-clear  Clear review history
+
 %sShortcuts%s
   Ctrl+C         Exit
   Ctrl+D         Exit
@@ -396,5 +650,5 @@ func (r *SimpleRunner) helpText() string {
   /command       Run a command
   !shell cmd     Run shell command directly
 
-`, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
+`, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset, ansiCyan, ansiReset)
 }

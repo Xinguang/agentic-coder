@@ -131,6 +131,10 @@ type Config struct {
 	OnResumeSession ResumeSessionCallback
 	OnNewSession    NewSessionCallback
 	OnSaveSession   SaveSessionCallback
+
+	// Review settings
+	EnableReview    bool // Enable automatic review after each response
+	MaxReviewCycles int  // Max review iterations (default 5)
 }
 
 // New creates a new TUI model
