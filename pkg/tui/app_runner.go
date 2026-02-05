@@ -145,6 +145,26 @@ func (r *AppRunner) runEngine(input string) {
 		OnError: func(err error) {
 			r.program.Send(contentMsg{content: err.Error(), isError: true})
 		},
+		// External tool callbacks (for Claude CLI executed tools)
+		OnExternalToolUse: func(name string, params map[string]interface{}) {
+			r.toolCount++
+			r.currentTool = name
+			debugLog("OnExternalToolUse: %s (#%d)", name, r.toolCount)
+			// Send status and content updates with "Claude Code" label
+			r.program.Send(statusMsg{text: fmt.Sprintf("[Claude Code] Tool #%d: %s ⏳", r.toolCount, name), isWorking: true})
+			r.program.Send(contentMsg{content: r.formatExternalToolUse(name, params)})
+			time.Sleep(10 * time.Millisecond)
+		},
+		OnExternalToolResult: func(name string, result *tool.Output) {
+			status := "✓"
+			if result.IsError {
+				status = "✗"
+			}
+			debugLog("OnExternalToolResult: %s %s", name, status)
+			r.program.Send(statusMsg{text: fmt.Sprintf("[Claude Code] Tool #%d: %s %s", r.toolCount, name, status), isWorking: true})
+			r.program.Send(contentMsg{content: r.formatExternalToolResult(name, result)})
+			time.Sleep(10 * time.Millisecond)
+		},
 	})
 
 	// Run
@@ -383,6 +403,117 @@ func (r *AppRunner) formatToolResult(name string, result *tool.Output) string {
 		} else {
 			sb.WriteString("\n")
 		}
+	}
+
+	sb.WriteString(fmt.Sprintf("%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
+	return sb.String()
+}
+
+// formatExternalToolUse formats tool use from external providers (like Claude CLI)
+func (r *AppRunner) formatExternalToolUse(name string, params map[string]interface{}) string {
+	var sb strings.Builder
+
+	// Tool header with Claude Code label
+	icon := "⚡"
+	action := name
+	switch name {
+	case "Read":
+		icon = "📖"
+		action = "Reading file"
+	case "Write":
+		icon = "📝"
+		action = "Writing file"
+	case "Edit":
+		icon = "✏️"
+		action = "Editing file"
+	case "Bash":
+		icon = "💻"
+		action = "Running command"
+	case "Grep":
+		icon = "🔍"
+		action = "Searching content"
+	case "Glob":
+		icon = "📂"
+		action = "Finding files"
+	case "Task":
+		icon = "🤖"
+		action = "Running task"
+	case "WebFetch":
+		icon = "🌐"
+		action = "Fetching URL"
+	case "WebSearch":
+		icon = "🔎"
+		action = "Searching web"
+	}
+
+	sb.WriteString(fmt.Sprintf("\n%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
+	sb.WriteString(fmt.Sprintf("%s🔷 Claude Code%s %s %s%s%s %s⏳%s\n", ansiCyan, ansiReset, icon, ansiYellow, action, ansiReset, ansiDim, ansiReset))
+
+	// Tool-specific details (same as formatToolUse)
+	switch name {
+	case "Read":
+		if fp, ok := params["file_path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
+		}
+	case "Write":
+		if fp, ok := params["file_path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
+		}
+	case "Edit":
+		if fp, ok := params["file_path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
+		}
+	case "Bash":
+		if cmd, ok := params["command"].(string); ok {
+			if len(cmd) > 80 {
+				sb.WriteString(fmt.Sprintf("   %s$ %s%s\n", ansiDim, cmd[:80], ansiReset))
+			} else {
+				sb.WriteString(fmt.Sprintf("   %s$ %s%s\n", ansiDim, cmd, ansiReset))
+			}
+		}
+	case "Grep":
+		if pattern, ok := params["pattern"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sPattern:%s %s\n", ansiDim, ansiReset, pattern))
+		}
+	case "Glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sPattern:%s %s\n", ansiDim, ansiReset, pattern))
+		}
+	case "Task":
+		if desc, ok := params["description"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sTask:%s %s\n", ansiDim, ansiReset, desc))
+		}
+	case "WebFetch":
+		if url, ok := params["url"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sURL:%s %s\n", ansiDim, ansiReset, url))
+		}
+	case "WebSearch":
+		if query, ok := params["query"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sQuery:%s %s\n", ansiDim, ansiReset, query))
+		}
+	}
+
+	return sb.String()
+}
+
+// formatExternalToolResult formats tool result from external providers (like Claude CLI)
+func (r *AppRunner) formatExternalToolResult(name string, result *tool.Output) string {
+	var sb strings.Builder
+
+	if result.IsError {
+		sb.WriteString(fmt.Sprintf("   %s✗ Error%s\n", ansiRed, ansiReset))
+		errLines := strings.Split(result.Content, "\n")
+		for i, line := range errLines {
+			if i >= 3 {
+				sb.WriteString(fmt.Sprintf("   %s... (%d more lines)%s\n", ansiDim, len(errLines)-3, ansiReset))
+				break
+			}
+			if line != "" {
+				sb.WriteString(fmt.Sprintf("   %s%s%s\n", ansiRed, line, ansiReset))
+			}
+		}
+	} else {
+		sb.WriteString(fmt.Sprintf("   %s✓ Done%s\n", ansiGreen, ansiReset))
 	}
 
 	sb.WriteString(fmt.Sprintf("%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
