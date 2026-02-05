@@ -28,7 +28,6 @@ import (
 	"github.com/xinguang/agentic-coder/pkg/provider/geminicli"
 	"github.com/xinguang/agentic-coder/pkg/provider/ollama"
 	"github.com/xinguang/agentic-coder/pkg/provider/openai"
-	"github.com/xinguang/agentic-coder/pkg/review"
 	"github.com/xinguang/agentic-coder/pkg/session"
 	"github.com/xinguang/agentic-coder/pkg/tool"
 	"github.com/xinguang/agentic-coder/pkg/tool/builtin"
@@ -490,12 +489,12 @@ func runChat(cmd *cobra.Command, args []string) error {
 	// Check for --no-tui flag
 	noTUI, _ := cmd.Flags().GetBool("no-tui")
 	enableReview, _ := cmd.Flags().GetBool("review")
-	reviewModel, _ := cmd.Flags().GetString("review-model")
-	reviewCycles, _ := cmd.Flags().GetInt("review-cycles")
-	reviewStrict, _ := cmd.Flags().GetBool("review-strict")
-	reviewSecurity, _ := cmd.Flags().GetBool("review-security")
-	reviewStyle, _ := cmd.Flags().GetBool("review-style")
-	reviewIncremental, _ := cmd.Flags().GetBool("review-incremental")
+	_, _ = cmd.Flags().GetString("review-model")      // TODO: reviewModel
+	_, _ = cmd.Flags().GetInt("review-cycles")        // TODO: reviewCycles
+	_, _ = cmd.Flags().GetBool("review-strict")       // TODO: reviewStrict
+	_, _ = cmd.Flags().GetBool("review-security")     // TODO: reviewSecurity
+	_, _ = cmd.Flags().GetBool("review-style")        // TODO: reviewStyle
+	_, _ = cmd.Flags().GetBool("review-incremental")  // TODO: reviewIncremental
 
 	// Use TUI mode if enabled and not disabled
 	if useTUI && !noTUI {
@@ -507,9 +506,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 		// Create a pointer to track current session for callbacks
 		currentSess := sess
 
-		runner := tui.NewSimpleRunner(eng, tui.Config{
+		runner := tui.NewAppRunner(eng, tui.Config{
 			EnableReview:    enableReview,
-			MaxReviewCycles: reviewCycles,
+			MaxReviewCycles: 5,
 			Model:        sess.Model,
 			CWD:          cwd,
 			Version:      version,
@@ -575,57 +574,9 @@ func runChat(cmd *cobra.Command, args []string) error {
 			},
 		})
 
-		// Set up reviewer if enabled
+		// TODO: Review feature not yet supported in AppRunner
 		if enableReview {
-			reviewProv := prov
-			reviewModelName := model
-			// Use separate model for review if specified
-			if reviewModel != "" {
-				reviewProvType := provider.DetectProviderFromModel(reviewModel)
-				var err error
-				reviewProv, err = createProvider(reviewProvType, apiKey, printer)
-				if err != nil {
-					printer.Warning("Failed to create review provider: %v, using main provider", err)
-					reviewProv = prov
-				} else {
-					reviewModelName = reviewModel
-				}
-			}
-
-			// Build review config
-			reviewCfg := review.DefaultReviewConfig()
-			if reviewStrict {
-				reviewCfg = review.StrictReviewConfig()
-			} else {
-				reviewCfg.CheckSecurity = reviewSecurity
-				reviewCfg.CheckStyle = reviewStyle
-			}
-
-			runner.SetReviewerWithConfig(reviewProv, reviewCfg)
-
-			// Set up incremental review if enabled
-			if reviewIncremental {
-				runner.SetIncrementalReview(true)
-			}
-
-			// Set up review history
-			appDir, err := config.GetAppDir()
-			if err == nil {
-				reviewHistory, err := review.NewReviewHistory(appDir)
-				if err == nil {
-					runner.SetReviewHistory(reviewHistory)
-				}
-			}
-
-			// Build status message
-			mode := "normal"
-			if reviewStrict {
-				mode = "strict"
-			}
-			if reviewIncremental {
-				mode += "+incremental"
-			}
-			printer.Dim("Auto-review enabled: model=%s, cycles=%d, mode=%s", reviewModelName, reviewCycles, mode)
+			printer.Warning("Review feature not yet supported in new TUI mode")
 		}
 
 		return runner.Run()
