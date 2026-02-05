@@ -2,15 +2,16 @@
 package tui
 
 import (
-	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/glamour"
+	"github.com/chzyer/readline"
 	"github.com/xinguang/agentic-coder/pkg/engine"
 	"github.com/xinguang/agentic-coder/pkg/provider"
 	"github.com/xinguang/agentic-coder/pkg/review"
@@ -100,17 +101,36 @@ func (r *SimpleRunner) SetReviewPipeline(pipeline *review.Pipeline) {
 func (r *SimpleRunner) Run() error {
 	r.printWelcome()
 
-	scanner := bufio.NewScanner(os.Stdin)
+	// Create readline instance with editing support
+	rl, err := readline.NewEx(&readline.Config{
+		Prompt:          "> ",
+		HistoryFile:     "/tmp/agentic-coder-history",
+		HistoryLimit:    1000,
+		InterruptPrompt: "^C",
+		EOFPrompt:       "exit",
+
+		// Enable editing features
+		DisableAutoSaveHistory: false,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create readline: %w", err)
+	}
+	defer rl.Close()
 
 	for {
-		fmt.Print("> ")
-
-		if !scanner.Scan() {
-			// EOF or error
-			return scanner.Err()
+		line, err := rl.Readline()
+		if err != nil {
+			if err == readline.ErrInterrupt {
+				continue // Ctrl+C, just show new prompt
+			}
+			if err == io.EOF {
+				fmt.Fprintf(os.Stdout, "\n%sGoodbye!%s\n", ansiDim, ansiReset)
+				return nil // Ctrl+D, exit gracefully
+			}
+			return err
 		}
 
-		input := strings.TrimSpace(scanner.Text())
+		input := strings.TrimSpace(line)
 		if input == "" {
 			continue
 		}
@@ -177,21 +197,26 @@ func (r *SimpleRunner) runEngine(input string) string {
 	ctx := r.ctx
 	r.mu.Unlock()
 
-	// Full response for review
+	// Full response for review and markdown rendering
 	var fullResponse strings.Builder
+	var textBuffer strings.Builder // Buffer for markdown text only
 
 	// Set up callbacks
 	r.engine.SetCallbacks(&engine.CallbackOptions{
 		OnText: func(text string) {
-			// Stream text directly for immediate feedback
-			fmt.Print(text)
+			// Accumulate text for markdown rendering
+			textBuffer.WriteString(text)
 			fullResponse.WriteString(text)
 		},
 		OnThinking: func(text string) {
+			// Flush any pending text before showing thinking
+			r.flushMarkdown(&textBuffer)
 			// Show thinking in dim color
 			fmt.Fprintf(os.Stdout, "%s%s%s", ansiDim, text, ansiReset)
 		},
 		OnToolUse: func(name string, params map[string]interface{}) {
+			// Flush any pending text before showing tool use
+			r.flushMarkdown(&textBuffer)
 			r.printToolUse(name, params)
 			// Record tool use in full response
 			fullResponse.WriteString(fmt.Sprintf("\n[Tool: %s]\n", name))
@@ -240,14 +265,17 @@ func (r *SimpleRunner) runEngine(input string) string {
 		}
 	}
 
+	// Flush any remaining text
+	r.flushMarkdown(&textBuffer)
+
 	// Add newline after response
 	fmt.Println()
 
 	return fullResponse.String()
 }
 
-// renderAndPrintMarkdown renders accumulated markdown and prints it
-func (r *SimpleRunner) renderAndPrintMarkdown(buf *strings.Builder) {
+// flushMarkdown renders and prints accumulated markdown text
+func (r *SimpleRunner) flushMarkdown(buf *strings.Builder) {
 	text := buf.String()
 	if text == "" {
 		return
@@ -258,7 +286,9 @@ func (r *SimpleRunner) renderAndPrintMarkdown(buf *strings.Builder) {
 	if mdRenderer != nil {
 		rendered, err := mdRenderer.Render(text)
 		if err == nil {
-			fmt.Print(rendered)
+			// Remove extra newlines from glamour output
+			rendered = strings.TrimSpace(rendered)
+			fmt.Println(rendered)
 			return
 		}
 	}
@@ -266,6 +296,7 @@ func (r *SimpleRunner) renderAndPrintMarkdown(buf *strings.Builder) {
 	// Fallback to raw text
 	fmt.Print(text)
 }
+
 
 // runReviewCycle runs the automatic review and correction cycle
 func (r *SimpleRunner) runReviewCycle(originalRequest, response string) {
