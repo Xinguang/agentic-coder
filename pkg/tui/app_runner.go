@@ -27,6 +27,10 @@ type AppRunner struct {
 	// Token tracking
 	inputTokens  int
 	outputTokens int
+
+	// Tool tracking
+	toolCount    int
+	currentTool  string
 }
 
 // NewAppRunner creates a new app runner
@@ -84,6 +88,10 @@ func (r *AppRunner) runEngine(input string) {
 	r.program.Send(contentMsg{content: fmt.Sprintf("\n%s> %s%s\n\n", ansiCyan, input, ansiReset)})
 	r.program.Send(statusMsg{text: "Thinking", isWorking: true})
 
+	// Reset tool counter
+	r.toolCount = 0
+	r.currentTool = ""
+
 	var responseBuffer strings.Builder
 
 	// Set up callbacks
@@ -91,16 +99,24 @@ func (r *AppRunner) runEngine(input string) {
 		OnText: func(text string) {
 			responseBuffer.WriteString(text)
 			r.program.Send(contentMsg{content: text})
+			r.program.Send(statusMsg{text: "Responding", isWorking: true})
 		},
 		OnThinking: func(text string) {
 			r.program.Send(statusMsg{text: "Thinking", isWorking: true})
 			r.program.Send(contentMsg{content: fmt.Sprintf("%s💭 %s%s", ansiDim, text, ansiReset)})
 		},
 		OnToolUse: func(name string, params map[string]interface{}) {
-			r.program.Send(statusMsg{text: fmt.Sprintf("Running %s", name), isWorking: true})
+			r.toolCount++
+			r.currentTool = name
+			r.program.Send(statusMsg{text: fmt.Sprintf("Tool #%d: %s", r.toolCount, name), isWorking: true})
 			r.program.Send(contentMsg{content: r.formatToolUse(name, params)})
 		},
 		OnToolResult: func(name string, result *tool.Output) {
+			status := "✓"
+			if result.IsError {
+				status = "✗"
+			}
+			r.program.Send(statusMsg{text: fmt.Sprintf("Tool #%d: %s %s", r.toolCount, name, status), isWorking: true})
 			r.program.Send(contentMsg{content: r.formatToolResult(name, result)})
 		},
 		OnUsage: func(inputTokens, outputTokens int) {
@@ -130,71 +146,229 @@ func (r *AppRunner) runEngine(input string) {
 }
 
 func (r *AppRunner) formatToolUse(name string, params map[string]interface{}) string {
+	var sb strings.Builder
+
+	// Tool header with icon and action description
 	icon := "⚡"
+	action := name
 	switch name {
 	case "Read":
 		icon = "📖"
+		action = "Reading file"
 	case "Write":
 		icon = "📝"
+		action = "Writing file"
 	case "Edit":
 		icon = "✏️"
+		action = "Editing file"
 	case "Bash":
 		icon = "💻"
-	case "Grep", "Glob":
+		action = "Running command"
+	case "Grep":
 		icon = "🔍"
+		action = "Searching content"
+	case "Glob":
+		icon = "📂"
+		action = "Finding files"
 	case "Task":
 		icon = "🤖"
+		action = "Running task"
+	case "WebFetch":
+		icon = "🌐"
+		action = "Fetching URL"
+	case "WebSearch":
+		icon = "🔎"
+		action = "Searching web"
 	}
 
-	var detail string
+	sb.WriteString(fmt.Sprintf("\n%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
+	sb.WriteString(fmt.Sprintf("%s %s%s%s %s⏳%s\n", icon, ansiYellow, action, ansiReset, ansiDim, ansiReset))
+
+	// Tool-specific details
 	switch name {
-	case "Edit", "Write", "Read":
+	case "Read":
 		if fp, ok := params["file_path"].(string); ok {
-			detail = fmt.Sprintf("   %s", fp)
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
 		}
+		if offset, ok := params["offset"].(float64); ok {
+			sb.WriteString(fmt.Sprintf("   %sFrom line:%s %.0f\n", ansiDim, ansiReset, offset))
+		}
+		if limit, ok := params["limit"].(float64); ok {
+			sb.WriteString(fmt.Sprintf("   %sLines:%s %.0f\n", ansiDim, ansiReset, limit))
+		}
+
+	case "Write":
+		if fp, ok := params["file_path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
+		}
+		if content, ok := params["content"].(string); ok {
+			lines := strings.Count(content, "\n") + 1
+			sb.WriteString(fmt.Sprintf("   %sContent:%s %d lines\n", ansiDim, ansiReset, lines))
+		}
+
+	case "Edit":
+		if fp, ok := params["file_path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sFile:%s %s\n", ansiDim, ansiReset, fp))
+		}
+		if old, ok := params["old_string"].(string); ok {
+			preview := strings.Split(old, "\n")[0]
+			if len(preview) > 50 {
+				preview = preview[:50] + "..."
+			}
+			sb.WriteString(fmt.Sprintf("   %sReplace:%s %s\n", ansiDim, ansiReset, preview))
+		}
+
 	case "Bash":
 		if cmd, ok := params["command"].(string); ok {
-			if len(cmd) > 60 {
-				cmd = cmd[:60] + "..."
+			// Show full command, split if too long
+			if len(cmd) > 80 {
+				sb.WriteString(fmt.Sprintf("   %s$ %s%s\n", ansiDim, cmd[:80], ansiReset))
+				sb.WriteString(fmt.Sprintf("   %s  %s...%s\n", ansiDim, cmd[80:min(160, len(cmd))], ansiReset))
+			} else {
+				sb.WriteString(fmt.Sprintf("   %s$ %s%s\n", ansiDim, cmd, ansiReset))
 			}
-			detail = fmt.Sprintf("   $ %s", cmd)
 		}
-	case "Grep", "Glob":
+		if desc, ok := params["description"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sDesc:%s %s\n", ansiDim, ansiReset, desc))
+		}
+
+	case "Grep":
 		if pattern, ok := params["pattern"].(string); ok {
-			detail = fmt.Sprintf("   pattern: %s", pattern)
+			sb.WriteString(fmt.Sprintf("   %sPattern:%s %s\n", ansiDim, ansiReset, pattern))
+		}
+		if path, ok := params["path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sPath:%s %s\n", ansiDim, ansiReset, path))
+		}
+
+	case "Glob":
+		if pattern, ok := params["pattern"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sPattern:%s %s\n", ansiDim, ansiReset, pattern))
+		}
+		if path, ok := params["path"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sPath:%s %s\n", ansiDim, ansiReset, path))
+		}
+
+	case "Task":
+		if desc, ok := params["description"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sTask:%s %s\n", ansiDim, ansiReset, desc))
+		}
+		if agentType, ok := params["subagent_type"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sAgent:%s %s\n", ansiDim, ansiReset, agentType))
+		}
+
+	case "WebFetch":
+		if url, ok := params["url"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sURL:%s %s\n", ansiDim, ansiReset, url))
+		}
+
+	case "WebSearch":
+		if query, ok := params["query"].(string); ok {
+			sb.WriteString(fmt.Sprintf("   %sQuery:%s %s\n", ansiDim, ansiReset, query))
 		}
 	}
 
-	result := fmt.Sprintf("\n%s %s%s%s\n", icon, ansiYellow, name, ansiReset)
-	if detail != "" {
-		result += fmt.Sprintf("%s%s%s\n", ansiDim, detail, ansiReset)
+	return sb.String()
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
 	}
-	return result
+	return b
 }
 
 func (r *AppRunner) formatToolResult(name string, result *tool.Output) string {
+	var sb strings.Builder
+
 	if result.IsError {
-		return fmt.Sprintf("%s   ✗ %s%s\n", ansiRed, truncate(result.Content, 60), ansiReset)
+		sb.WriteString(fmt.Sprintf("   %s✗ Error%s\n", ansiRed, ansiReset))
+		// Show error details
+		errLines := strings.Split(result.Content, "\n")
+		for i, line := range errLines {
+			if i >= 5 {
+				sb.WriteString(fmt.Sprintf("   %s... (%d more lines)%s\n", ansiDim, len(errLines)-5, ansiReset))
+				break
+			}
+			if line != "" {
+				sb.WriteString(fmt.Sprintf("   %s%s%s\n", ansiRed, line, ansiReset))
+			}
+		}
+		sb.WriteString(fmt.Sprintf("%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
+		return sb.String()
 	}
 
-	summary := ""
+	// Success - show result summary based on tool type
 	content := result.Content
 	lines := strings.Split(content, "\n")
-	if len(lines) > 5 {
-		summary = fmt.Sprintf("%d lines", len(lines))
-	} else if len(content) > 100 {
-		summary = content[:100] + "..."
-	} else if content != "" {
-		summary = strings.ReplaceAll(content, "\n", " ")
-		if len(summary) > 60 {
-			summary = summary[:60] + "..."
+	lineCount := len(lines)
+
+	sb.WriteString(fmt.Sprintf("   %s✓ Done%s", ansiGreen, ansiReset))
+
+	switch name {
+	case "Read":
+		sb.WriteString(fmt.Sprintf(" %s(%d lines)%s\n", ansiDim, lineCount, ansiReset))
+
+	case "Write":
+		sb.WriteString(fmt.Sprintf(" %s(file written)%s\n", ansiDim, ansiReset))
+
+	case "Edit":
+		sb.WriteString(fmt.Sprintf(" %s(file updated)%s\n", ansiDim, ansiReset))
+
+	case "Bash":
+		if lineCount > 1 {
+			sb.WriteString(fmt.Sprintf(" %s(%d lines output)%s\n", ansiDim, lineCount, ansiReset))
+			// Show first few lines of output
+			for i, line := range lines {
+				if i >= 3 {
+					sb.WriteString(fmt.Sprintf("   %s... (%d more lines)%s\n", ansiDim, lineCount-3, ansiReset))
+					break
+				}
+				if line != "" && len(line) < 100 {
+					sb.WriteString(fmt.Sprintf("   %s%s%s\n", ansiDim, line, ansiReset))
+				}
+			}
+		} else if content != "" {
+			if len(content) > 80 {
+				content = content[:80] + "..."
+			}
+			sb.WriteString(fmt.Sprintf(" %s%s%s\n", ansiDim, content, ansiReset))
+		} else {
+			sb.WriteString("\n")
+		}
+
+	case "Grep":
+		// Count matches
+		if lineCount > 0 && content != "" {
+			sb.WriteString(fmt.Sprintf(" %s(%d matches)%s\n", ansiDim, lineCount, ansiReset))
+		} else {
+			sb.WriteString(fmt.Sprintf(" %s(no matches)%s\n", ansiDim, ansiReset))
+		}
+
+	case "Glob":
+		// Count files found
+		if lineCount > 0 && content != "" {
+			sb.WriteString(fmt.Sprintf(" %s(%d files)%s\n", ansiDim, lineCount, ansiReset))
+		} else {
+			sb.WriteString(fmt.Sprintf(" %s(no files)%s\n", ansiDim, ansiReset))
+		}
+
+	case "Task":
+		sb.WriteString(fmt.Sprintf(" %s(completed)%s\n", ansiDim, ansiReset))
+
+	default:
+		if content != "" {
+			if len(content) > 60 {
+				sb.WriteString(fmt.Sprintf(" %s%s...%s\n", ansiDim, content[:60], ansiReset))
+			} else {
+				sb.WriteString(fmt.Sprintf(" %s%s%s\n", ansiDim, content, ansiReset))
+			}
+		} else {
+			sb.WriteString("\n")
 		}
 	}
 
-	if summary != "" {
-		return fmt.Sprintf("%s   ✓ %s%s\n", ansiGreen, summary, ansiReset)
-	}
-	return fmt.Sprintf("%s   ✓%s\n", ansiGreen, ansiReset)
+	sb.WriteString(fmt.Sprintf("%s─────────────────────────────────────%s\n", ansiDim, ansiReset))
+	return sb.String()
 }
 
 func (r *AppRunner) handleCommand(input string) {
